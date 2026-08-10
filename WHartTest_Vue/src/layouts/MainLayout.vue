@@ -4,9 +4,9 @@
     <a-layout-header class="header">
       <div class="left-section">
         <div class="logo" unselectable="on">
-          <img :src="brandLogoUrl" alt="WHartTest Logo" class="logo-icon" />
-          <span class="logo-text">WHartTest</span>
-          <img :src="brandBadgeUrl" alt="CE" class="logo-ce-icon" />
+          <img :src="brandLogoUrl" alt="AgentQA Logo" class="logo-icon" />
+          <span class="logo-text">AgentQA</span>
+          <img :src="brandBadgeUrl" alt="TZSZ" class="logo-ce-icon" />
         </div>
         <div class="project-selector" v-if="showProjectSelector">
           <a-select
@@ -77,7 +77,7 @@
         <a-popover v-if="hasUpdate" position="bottom" trigger="hover" content-class="version-popover">
           <a 
             class="version-badge update-available" 
-            :href="versionInfo?.releaseUrl || 'https://github.com/mgdaaslab/WHartTest/releases'"
+            :href="versionInfo?.releaseUrl || 'https://github.com/mgdaaslab/AgentQA/releases'"
             target="_blank"
           >
             {{ tl('当前版本:') }} {{ currentVersion }}
@@ -94,7 +94,7 @@
               </div>
               <a 
                 class="version-update-footer"
-                :href="versionInfo?.releaseUrl || 'https://github.com/mgdaaslab/WHartTest/releases'"
+                :href="versionInfo?.releaseUrl || 'https://github.com/mgdaaslab/AgentQA/releases'"
                 target="_blank"
               >
                 {{ tl('点击查看完整更新日志') }}
@@ -290,7 +290,7 @@ import { useEnvironmentStore } from '@/features/api-testing/stores/environmentSt
 import { useAppI18n } from '@/composables/useAppI18n';
 import { brandLogoUrl, getPublicAssetUrl } from '@/utils/assetUrl';
 
-const brandBadgeUrl = getPublicAssetUrl('CE.svg');
+const brandBadgeUrl = getPublicAssetUrl('TZSZ.svg');
 import AppLocaleToggle from '@/components/AppLocaleToggle.vue';
 import {
   getCurrentVersion,

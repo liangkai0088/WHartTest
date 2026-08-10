@@ -754,7 +754,7 @@ const handleSave = async (requestData: RequestHeaderData) => {
 
     console.log('API响应完整内容:', result)
 
-    // 获取接口数据 - WHartTest API pattern
+    // 获取接口数据 - AgentQA API pattern
     let savedInterface: any = null
 
     if (result?.success && result.data) {

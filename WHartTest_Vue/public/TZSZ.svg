@@ -1,0 +1,10 @@
+<svg width="38" height="26" viewBox="0 0 38 26" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="38" height="26" rx="13" fill="url(#p0)"/>
+<text x="19" y="18" text-anchor="middle" fill="white" font-size="10" font-weight="700" font-family="system-ui, sans-serif">TZSZ</text>
+<defs>
+<linearGradient id="p0" x1="0" y1="13" x2="38" y2="13" gradientUnits="userSpaceOnUse">
+<stop stop-color="#85C12B"/>
+<stop offset="1" stop-color="#009DEE"/>
+</linearGradient>
+</defs>
+</svg>

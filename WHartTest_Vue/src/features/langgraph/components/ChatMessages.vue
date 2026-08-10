@@ -69,8 +69,8 @@ const props = withDefaults(defineProps<Props>(), {
 const { isEnglish } = useAppI18n();
 const text = computed(() => (
   isEnglish.value
-    ? { emptyChat: 'Start chatting with WHartTest' }
-    : { emptyChat: '开始与 WHartTest 的对话吧' }
+    ? { emptyChat: 'Start chatting with AgentQA' }
+    : { emptyChat: '开始与 AgentQA 的对话吧' }
 ));
 
 defineEmits<{

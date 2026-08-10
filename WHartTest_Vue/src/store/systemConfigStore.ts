@@ -3,14 +3,14 @@ import { ref, computed } from 'vue';
 import { systemConfigService, type SystemConfig } from '@/services/systemConfigService';
 import { brandLogoUrl, getPublicAssetUrl } from '@/utils/assetUrl';
 
-const defaultBrandBadgeUrl = getPublicAssetUrl('CE.svg');
+const defaultBrandBadgeUrl = getPublicAssetUrl('TZSZ.svg');
 
 export const useSystemConfigStore = defineStore('systemConfig', () => {
   const config = ref<SystemConfig>({
-    title: 'WHartTest',
-    name: 'WHartTest',
-    login_title: 'WHartTest',
-    login_subtitle: '小麦智测自动化平台',
+    title: 'AgentQA',
+    name: 'AgentQA',
+    login_title: 'AgentQA',
+    login_subtitle: 'AI 自动化测试平台',
     login_tags: 'AI 智能生成, RAG 知识库, MCP 工具调用, Skills 技能库, Playwright 自动化, LangGraph',
     logo_url: '',
     brand_badge_enabled: true,

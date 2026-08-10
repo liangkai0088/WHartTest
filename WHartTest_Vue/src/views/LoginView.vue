@@ -26,7 +26,7 @@
         <img :src="brandLogoUrl" alt="Logo" class="brand-logo" />
         <div class="brand-title-row">
           <h1 class="brand-title">{{ brandTitle }}</h1>
-          <img v-if="brandBadgeEnabled" :src="brandBadgeUrl" alt="CE" class="brand-ce-icon" />
+          <img v-if="brandBadgeEnabled" :src="brandBadgeUrl" alt="TZSZ" class="brand-ce-icon" />
         </div>
         <p class="brand-subtitle">{{ brandSubtitle }}</p>
         <div class="brand-tags">
@@ -217,7 +217,7 @@ const brandBadgeEnabled = computed(() => systemConfigStore.getBrandBadgeEnabled)
 const brandBadgeUrl = computed(() => systemConfigStore.getBrandBadgeUrl)
 const brandTitle = computed(() => systemConfigStore.getLoginTitle)
 const brandSubtitle = computed(() => {
-  return systemConfigStore.config.login_subtitle || (isEnglish.value ? 'Wheat intelligence test automation platform' : '小麦智测自动化平台')
+  return systemConfigStore.config.login_subtitle || (isEnglish.value ? 'AI Automation Testing Platform' : 'AI 自动化测试平台')
 })
 const featureTags = computed(() => {
   const configTags = systemConfigStore.getLoginTags

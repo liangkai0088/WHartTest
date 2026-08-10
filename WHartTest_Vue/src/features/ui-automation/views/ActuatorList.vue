@@ -21,7 +21,7 @@
       class="mb-4"
     >
       <template #title>暂无在线执行器</template>
-      请先启动执行器服务：cd WHartTest_Actuator && python main.py
+      请先启动执行器服务：cd AgentQA_Actuator && python main.py
     </a-alert>
 
     <!-- 执行器表格 -->

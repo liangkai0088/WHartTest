@@ -191,7 +191,7 @@ const text = computed(() => (
     ? {
         modalTitle: 'WeChat access',
         heroTitle: 'Connect current project to WeChat chat',
-        heroDescription: 'After scanning the code, users can chat in WeChat with the WHartTest session for this project.',
+        heroDescription: 'After scanning the code, users can chat in WeChat with the AgentQA session for this project.',
         boundCount: 'Bound',
         runningCount: 'Running',
         errorCount: 'Error',
@@ -241,7 +241,7 @@ const text = computed(() => (
     : {
         modalTitle: '微信接入',
         heroTitle: '把当前项目接到微信对话里',
-        heroDescription: '扫码后，用户可以直接在微信里与当前项目对应的 WHartTest 会话沟通，消息仍然走你现有的对话链路。',
+        heroDescription: '扫码后，用户可以直接在微信里与当前项目对应的 AgentQA 会话沟通，消息仍然走你现有的对话链路。',
         boundCount: '已绑定',
         runningCount: '运行中',
         errorCount: '异常',
