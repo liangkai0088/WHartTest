@@ -205,11 +205,38 @@ RUN set -eux; \
       find "$browser_root" -maxdepth 4 -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "NOTICE*" -o -name "ABOUT" \) -exec cp --parents -f {} /app/third_party_licenses/playwright-browsers/ \; ; \
     fi
 
-# 安装 agent-browser CLI 工具及其浏览器
-# agent-browser 是 AI Agent 专用的浏览器自动化工具
-RUN npm config set registry "${NPM_REGISTRY}" && \
-    npm install -g agent-browser && \
-    agent-browser install
+# 安装 agent-browser CLI 工具。
+# Linux ARM64 上 agent-browser 自带的 Chrome for Testing 下载不可用，复用 Playwright 已安装的 Chromium。
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
+RUN set -eux; \
+    chromium_exe="$(find /root/.cache/ms-playwright -type f -path '*/chrome-linux/chrome' | head -n 1)"; \
+    test -n "$chromium_exe"; \
+    ln -sf "$chromium_exe" /usr/bin/chromium; \
+    ln -sf "$chromium_exe" /usr/bin/chromium-browser; \
+    install_agent_browser() { \
+      for registry in "https://registry.npmmirror.com" "${NPM_REGISTRY}" "https://registry.npmjs.org"; do \
+        [ -n "$registry" ] || continue; \
+        echo "npm install agent-browser via $registry"; \
+        if npm --registry "$registry" \
+          --fetch-timeout=60000 \
+          --fetch-retries=2 \
+          --fetch-retry-mintimeout=5000 \
+          --fetch-retry-maxtimeout=30000 \
+          --no-audit \
+          --no-fund \
+          install -g agent-browser@0.34.0; then \
+          return 0; \
+        fi; \
+        echo "npm install agent-browser failed via $registry, trying next registry..." >&2; \
+      done; \
+      return 1; \
+    }; \
+    install_agent_browser; \
+    if [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+      echo "Skipping agent-browser managed browser download on Linux ARM64; using ${AGENT_BROWSER_EXECUTABLE_PATH}"; \
+    else \
+      agent-browser install; \
+    fi
 
 # 复制随仓库提交的 BM25 平铺模型目录（运行时通过 specific_model_path 离线加载）
 COPY bm25_model /app/bm25_model
@@ -236,7 +263,9 @@ COPY api_modules/ /app/api_modules/
 COPY api_sync/ /app/api_sync/
 COPY api_testcases/ /app/api_testcases/
 COPY api_testtasks/ /app/api_testtasks/
+COPY code_analysis/ /app/code_analysis/
 COPY httprunner/ /app/httprunner/
+COPY execution_dashboard/ /app/execution_dashboard/
 COPY file_management/ /app/file_management/
 COPY knowledge/ /app/knowledge/
 COPY langgraph_integration/ /app/langgraph_integration/
@@ -260,6 +289,29 @@ RUN find /app -type f \( -name "*.sqlite*" -o -name "*.db" -o -name "*.sql" \) -
     find /opt/venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
     find /opt/venv -type f -name "*.pyc" -delete 2>/dev/null || true && \
     find /opt/venv -type f -name "*.pyo" -delete 2>/dev/null || true
+
+# 安装 code_analysis 组件解析器依赖（@vue/compiler-sfc + @babel/parser），
+# 镜像源失败时自动回退官方源。
+RUN set -eux; \
+    install_component_parser() { \
+      for registry in "https://registry.npmmirror.com" "${NPM_REGISTRY}" "https://registry.npmjs.org"; do \
+        [ -n "$registry" ] || continue; \
+        echo "npm install component-parser deps via $registry"; \
+        if npm --registry "$registry" \
+          --fetch-timeout=60000 \
+          --fetch-retries=2 \
+          --fetch-retry-mintimeout=5000 \
+          --fetch-retry-maxtimeout=30000 \
+          --no-audit \
+          --no-fund \
+          install --prefix /app/code_analysis/js; then \
+          return 0; \
+        fi; \
+        echo "npm install component-parser failed via $registry, trying next registry..." >&2; \
+      done; \
+      return 1; \
+    }; \
+    install_component_parser
 
 # 创建必要的目录
 RUN mkdir -p media static nltk_data /var/log

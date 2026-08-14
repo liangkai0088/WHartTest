@@ -33,7 +33,7 @@ base_url = os.getenv("WHARTTEST_BACKEND_URL", "http://backend:8000")
 
 # 从环境变量读取 API Key
 # 请在 .env 文件或环境变量中设置 WHARTTEST_API_KEY
-api_key = os.getenv("WHARTTEST_API_KEY", "")
+api_key = os.getenv("WHARTTEST_API_KEY", "wharttest-default-mcp-key-2025")
 
 headers = {"accept": "application/json, text/plain,*/*", "X-API-Key": api_key}
 
@@ -753,6 +753,555 @@ update 操作：
         },
         ensure_ascii=False,
     )
+
+
+# ============ 代码分析工具（code_analysis 后端） ============
+
+
+def _code_analysis_error(action, url, response):
+    """
+    构造后端非 2xx 响应的结构化错误信息
+
+    Args:
+        action: 操作描述
+        url: 请求地址
+        response: requests 响应对象
+
+    Returns:
+        str: 格式化后的错误 JSON 字符串
+    """
+    error_info = {
+        "error": f"API 请求失败: {action}",
+        "status_code": response.status_code,
+        "url": url,
+        "response_text": response.text[:500],
+    }
+    return json.dumps(error_info, indent=4, ensure_ascii=False)
+
+
+@mcp.tool(description="从本地zip压缩包创建代码项目并上传，返回代码项目id、快照id和文件数量")
+def create_code_project_from_zip(
+    project_id: int = Field(description="项目id"),
+    project_name: str = Field(description="代码项目名称"),
+    zip_path: str = Field(description="本地zip压缩包文件路径"),
+) -> str:
+    """
+    从本地zip压缩包创建代码项目并上传快照
+
+    Args:
+        project_id: WHartTest平台项目id
+        project_name: 代码项目名称
+        zip_path: 本地zip文件路径
+
+    Returns:
+        代码项目id、快照id和文件数量
+    """
+    try:
+        # 参数验证
+        if not project_id:
+            return "项目id不能为空"
+        if not project_name:
+            return "项目名称不能为空"
+        if not zip_path:
+            return "zip文件路径不能为空"
+
+        # 检查文件是否存在
+        if not os.path.exists(zip_path):
+            return f"文件不存在: {zip_path}"
+
+        # 第一步：创建代码项目
+        create_url = base_url + f"/api/projects/{project_id}/code/projects/"
+        create_response = requests.post(
+            create_url,
+            headers=headers,
+            json={"name": project_name, "source_type": "zip_upload"},
+        )
+        if create_response.status_code not in [200, 201]:
+            return _code_analysis_error("创建代码项目", create_url, create_response)
+
+        create_data = create_response.json().get("data") or {}
+        code_project_id = create_data.get("id")
+        if not code_project_id:
+            return json.dumps(
+                {
+                    "error": "创建代码项目成功但未返回项目id",
+                    "response": create_data,
+                },
+                indent=4,
+                ensure_ascii=False,
+            )
+
+        # 第二步：上传zip快照（multipart，字段名 file）
+        upload_url = (
+            base_url
+            + f"/api/projects/{project_id}/code/projects/{code_project_id}/upload/"
+        )
+        with open(zip_path, "rb") as file:
+            zip_bytes = file.read()
+
+        file_ext = os.path.splitext(zip_path)[1].lower()
+        mime_types = {".tar": "application/x-tar", ".gz": "application/gzip", ".tgz": "application/gzip"}
+        content_type = mime_types.get(file_ext, "application/zip")  # 默认为 zip
+
+        files = {"file": (os.path.basename(zip_path), zip_bytes, content_type)}
+        upload_response = requests.post(upload_url, headers=headers, files=files)
+        if upload_response.status_code not in [200, 201]:
+            return _code_analysis_error("上传代码项目zip", upload_url, upload_response)
+
+        snapshot_data = upload_response.json().get("data") or {}
+        snapshot_id = snapshot_data.get("id") or snapshot_data.get("snapshot_id")
+
+        # 文件数量：优先从快照响应中读取，缺失时通过文件列表接口统计
+        file_count = snapshot_data.get("file_count")
+        if file_count is None:
+            file_count = snapshot_data.get("files_count")
+        if file_count is None and isinstance(snapshot_data.get("files"), list):
+            file_count = len(snapshot_data["files"])
+
+        if file_count is None:
+            try:
+                files_url = (
+                    base_url
+                    + f"/api/projects/{project_id}/code/projects/{code_project_id}/files/"
+                )
+                files_params = {}
+                if snapshot_id:
+                    files_params["snapshot_id"] = snapshot_id
+                files_response = requests.get(files_url, headers=headers, params=files_params)
+                if files_response.status_code == 200:
+                    files_data = files_response.json().get("data") or []
+                    if isinstance(files_data, dict) and isinstance(files_data.get("results"), list):
+                        files_data = files_data["results"]
+                    if isinstance(files_data, list):
+                        file_count = len(files_data)
+            except Exception:
+                pass
+
+        return json.dumps(
+            {
+                "message": "代码项目创建并上传成功",
+                "code_project_id": code_project_id,
+                "snapshot_id": snapshot_id,
+                "file_count": file_count,
+                "project_name": create_data.get("name") or project_name,
+            },
+            indent=4,
+            ensure_ascii=False,
+        )
+
+    except FileNotFoundError:
+        return f"文件未找到: {zip_path}"
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "url": create_url if "create_url" in locals() else base_url,
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置",
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {"error": f"未知错误: {str(e)}"}
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+
+
+@mcp.tool(description="分析OpenAPI/Swagger接口文档，生成接口测试用例建议")
+def analyze_openapi_spec(
+    project_id: int = Field(description="项目id"),
+    code_project_id: int = Field(description="代码项目id"),
+    spec_path_or_url: str = Field(description="OpenAPI规范的本地文件路径或http(s)在线地址"),
+) -> str:
+    """
+    分析OpenAPI/Swagger接口文档，生成接口测试用例建议
+
+    Args:
+        project_id: WHartTest平台项目id
+        code_project_id: 代码项目id
+        spec_path_or_url: 支持 http(s) 在线地址或本地 json/yaml 文件路径
+
+    Returns:
+        任务id和状态
+    """
+    try:
+        # 参数验证
+        if not project_id:
+            return "项目id不能为空"
+        if not spec_path_or_url:
+            return "spec_path_or_url不能为空"
+
+        url = base_url + f"/api/projects/{project_id}/code/spec-analysis/"
+        spec_path_or_url = spec_path_or_url.strip()
+
+        if spec_path_or_url.lower().startswith("http://") or spec_path_or_url.lower().startswith(
+            "https://"
+        ):
+            # 在线地址：JSON 请求体
+            payload = {"spec_url": spec_path_or_url}
+            if code_project_id:
+                payload["code_project_id"] = code_project_id
+            response = requests.post(url, headers=headers, json=payload)
+        else:
+            # 本地文件：multipart 上传（字段名 file）
+            if not os.path.exists(spec_path_or_url):
+                return f"文件不存在: {spec_path_or_url}"
+            with open(spec_path_or_url, "rb") as file:
+                spec_bytes = file.read()
+
+            file_ext = os.path.splitext(spec_path_or_url)[1].lower()
+            mime_types = {
+                ".yaml": "application/x-yaml",
+                ".yml": "application/x-yaml",
+                ".txt": "text/plain",
+            }
+            content_type = mime_types.get(file_ext, "application/json")
+
+            files = {
+                "file": (os.path.basename(spec_path_or_url), spec_bytes, content_type)
+            }
+            data = {}
+            if code_project_id:
+                data["code_project_id"] = str(code_project_id)
+            response = requests.post(url, headers=headers, files=files, data=data)
+
+        if response.status_code not in [200, 201]:
+            return _code_analysis_error("提交OpenAPI规范分析", url, response)
+
+        task_data = response.json().get("data") or {}
+        return json.dumps(
+            {
+                "message": "OpenAPI规范分析任务提交成功",
+                "task_id": task_data.get("id") or task_data.get("task_id"),
+                "status": task_data.get("status"),
+            },
+            indent=4,
+            ensure_ascii=False,
+        )
+
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置",
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {"error": f"未知错误: {str(e)}"}
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+
+
+@mcp.tool(description="获取OpenAPI接口分析的建议列表")
+def list_spec_suggestions(
+    project_id: int = Field(description="项目id"),
+    analysis_task_id: int = Field(description="接口分析任务id"),
+    status: str = Field(
+        default="pending",
+        description="建议状态过滤: pending(待处理), approved(已通过), rejected(已拒绝)",
+    ),
+) -> str:
+    """
+    获取OpenAPI接口分析的建议列表
+
+    Args:
+        project_id: WHartTest平台项目id
+        analysis_task_id: 接口分析任务id
+        status: 建议状态过滤
+
+    Returns:
+        建议列表（id、name、method、path、priority、steps数量）
+    """
+    try:
+        if not project_id:
+            return "项目id不能为空"
+        if not analysis_task_id:
+            return "分析任务id不能为空"
+
+        url = (
+            base_url
+            + f"/api/projects/{project_id}/code/spec-analysis/{analysis_task_id}/suggestions/"
+        )
+        response = requests.get(url, headers=headers, params={"status": status})
+
+        if response.status_code != 200:
+            return _code_analysis_error("获取接口分析建议", url, response)
+
+        data = response.json().get("data") or []
+        if isinstance(data, dict) and isinstance(data.get("results"), list):
+            data = data["results"]
+        if not isinstance(data, list):
+            data = [data] if data else []
+
+        suggestions = []
+        for item in data:
+            steps = item.get("steps")
+            suggestions.append(
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "method": item.get("method"),
+                    "path": item.get("path"),
+                    "priority": item.get("priority"),
+                    "steps_count": len(steps) if isinstance(steps, list) else None,
+                }
+            )
+
+        return json.dumps({"suggestions": suggestions}, indent=4, ensure_ascii=False)
+
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置",
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {"error": f"未知错误: {str(e)}"}
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+
+
+@mcp.tool(description="批量通过OpenAPI接口分析的建议")
+def approve_spec_suggestions(
+    project_id: int = Field(description="项目id"),
+    analysis_task_id: int = Field(description="接口分析任务id"),
+    suggestion_ids: list = Field(description="要建议通过的id列表, 示例: [1, 2, 3]"),
+) -> str:
+    """
+    批量通过OpenAPI接口分析的建议
+
+    Args:
+        project_id: WHartTest平台项目id
+        analysis_task_id: 接口分析任务id
+        suggestion_ids: 建议id列表
+
+    Returns:
+        每个建议的处理结果
+    """
+    try:
+        if not project_id:
+            return "项目id不能为空"
+        if not analysis_task_id:
+            return "分析任务id不能为空"
+        if not suggestion_ids:
+            return "suggestion_ids不能为空"
+
+        url = (
+            base_url
+            + f"/api/projects/{project_id}/code/spec-analysis/{analysis_task_id}/approve/"
+        )
+        response = requests.post(
+            url, headers=headers, json={"suggestion_ids": suggestion_ids}
+        )
+
+        if response.status_code not in [200, 201]:
+            return _code_analysis_error("通过接口分析建议", url, response)
+
+        data = response.json().get("data") or {}
+        return json.dumps(
+            {"message": "接口分析建议通过成功", "results": data},
+            indent=4,
+            ensure_ascii=False,
+        )
+
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置",
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {"error": f"未知错误: {str(e)}"}
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+
+
+@mcp.tool(description="分析前端组件，生成组件测试用例建议")
+def analyze_frontend_components(
+    project_id: int = Field(description="项目id"),
+    code_project_id: int = Field(description="代码项目id"),
+    snapshot_id: int = Field(
+        default=None, description="可选，指定要分析的代码快照id"
+    ),
+    file_filter: list = Field(
+        default=None,
+        description="可选，指定要分析的文件路径过滤列表, 示例: ['src/App.vue', 'src/components/']",
+    ),
+) -> str:
+    """
+    分析前端组件，生成组件测试用例建议
+
+    Args:
+        project_id: WHartTest平台项目id
+        code_project_id: 代码项目id
+        snapshot_id: 可选，代码快照id
+        file_filter: 可选，文件路径过滤列表
+
+    Returns:
+        任务id和状态
+    """
+    try:
+        if not project_id:
+            return "项目id不能为空"
+        if not code_project_id:
+            return "代码项目id不能为空"
+
+        url = base_url + f"/api/projects/{project_id}/code/component-analysis/"
+        payload = {"code_project_id": code_project_id}
+        if snapshot_id is not None:
+            payload["snapshot_id"] = snapshot_id
+        if file_filter is not None:
+            payload["file_filter"] = file_filter
+
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code not in [200, 201]:
+            return _code_analysis_error("提交前端组件分析", url, response)
+
+        task_data = response.json().get("data") or {}
+        return json.dumps(
+            {
+                "message": "前端组件分析任务提交成功",
+                "task_id": task_data.get("id") or task_data.get("task_id"),
+                "status": task_data.get("status"),
+            },
+            indent=4,
+            ensure_ascii=False,
+        )
+
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置",
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {"error": f"未知错误: {str(e)}"}
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+
+
+@mcp.tool(description="获取前端组件分析的元素建议列表")
+def list_element_suggestions(
+    project_id: int = Field(description="项目id"),
+    task_id: int = Field(description="前端组件分析任务id"),
+    status: str = Field(
+        default="pending",
+        description="建议状态过滤: pending(待处理), approved(已通过), rejected(已拒绝)",
+    ),
+) -> str:
+    """
+    获取前端组件分析的元素建议列表
+
+    Args:
+        project_id: WHartTest平台项目id
+        task_id: 前端组件分析任务id
+        status: 建议状态过滤
+
+    Returns:
+        元素建议列表（id、page_name、file_path、element_name、locator槽位）
+    """
+    try:
+        if not project_id:
+            return "项目id不能为空"
+        if not task_id:
+            return "分析任务id不能为空"
+
+        url = (
+            base_url
+            + f"/api/projects/{project_id}/code/component-analysis/{task_id}/element-suggestions/"
+        )
+        response = requests.get(url, headers=headers, params={"status": status})
+
+        if response.status_code != 200:
+            return _code_analysis_error("获取元素建议", url, response)
+
+        data = response.json().get("data") or []
+        if isinstance(data, dict) and isinstance(data.get("results"), list):
+            data = data["results"]
+        if not isinstance(data, list):
+            data = [data] if data else []
+
+        suggestions = []
+        for item in data:
+            locator = item.get("locator")
+            if isinstance(locator, dict):
+                locator_slots = locator.get("slots")
+            else:
+                locator_slots = item.get("locator_slots")
+            suggestions.append(
+                {
+                    "id": item.get("id"),
+                    "page_name": item.get("page_name"),
+                    "file_path": item.get("file_path"),
+                    "element_name": item.get("element_name"),
+                    "locator_slots": locator_slots,
+                }
+            )
+
+        return json.dumps({"suggestions": suggestions}, indent=4, ensure_ascii=False)
+
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置",
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {"error": f"未知错误: {str(e)}"}
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+
+
+@mcp.tool(description="批量通过前端组件分析的元素建议")
+def approve_element_suggestions(
+    project_id: int = Field(description="项目id"),
+    task_id: int = Field(description="前端组件分析任务id"),
+    suggestion_ids: list = Field(description="要建议通过的元素id列表, 示例: [1, 2, 3]"),
+) -> str:
+    """
+    批量通过前端组件分析的元素建议
+
+    Args:
+        project_id: WHartTest平台项目id
+        task_id: 前端组件分析任务id
+        suggestion_ids: 元素建议id列表
+
+    Returns:
+        每个建议的处理结果
+    """
+    try:
+        if not project_id:
+            return "项目id不能为空"
+        if not task_id:
+            return "分析任务id不能为空"
+        if not suggestion_ids:
+            return "suggestion_ids不能为空"
+
+        url = (
+            base_url
+            + f"/api/projects/{project_id}/code/component-analysis/{task_id}/approve/"
+        )
+        response = requests.post(
+            url, headers=headers, json={"suggestion_ids": suggestion_ids}
+        )
+
+        if response.status_code not in [200, 201]:
+            return _code_analysis_error("通过元素建议", url, response)
+
+        data = response.json().get("data") or {}
+        return json.dumps(
+            {"message": "元素建议通过成功", "results": data},
+            indent=4,
+            ensure_ascii=False,
+        )
+
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置",
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {"error": f"未知错误: {str(e)}"}
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
 
 
 if __name__ == "__main__":

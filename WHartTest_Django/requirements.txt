@@ -108,6 +108,8 @@ psycopg[binary]==3.3.1
 # LangChain MCP适配器 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langchain-mcp-adapters/blob/main/LICENSE
 langchain-mcp-adapters==0.2.1
+# langchain-mcp-adapters 0.2.1 imports APIs removed in mcp 2.x.
+mcp>=1.9.2,<2.0.0
 
 # Excel文件处理 - MIT许可证 (当前版本: 3.1.5)
 # https://github.com/theorchard/openpyxl/blob/master/LICENCE.rst
@@ -270,6 +272,11 @@ uvicorn[standard]==0.34.0
 # HTTPX异步HTTP客户端 - BSD许可证 (当前版本: 0.28.1)
 # https://github.com/encode/httpx/blob/master/LICENSE.md
 httpx==0.28.1
+
+# OpenAPI解析器 - MIT许可证 (用于源码级AI分析的OpenAPI规范解析, 当前版本: 26.7.19.0)
+# https://github.com/RonnyPfannschmidt/prance/blob/main/LICENSE
+# [osv] 额外依赖提供 openapi-spec-validator 校验后端
+prance[osv]==26.7.19.0
 
 # Pytest测试框架 - MIT许可证 (用于自动化脚本执行)
 # https://github.com/pytest-dev/pytest/blob/main/LICENSE

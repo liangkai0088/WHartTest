@@ -181,6 +181,11 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/dashboard/execution')">{{ executionDashboardMenuLabel }}</a>
           </a-menu-item>
 
+          <a-menu-item key="code-analysis">
+            <template #icon><icon-code-square /></template>
+            <a href="#" @click="checkProjectAndNavigate($event, '/code-analysis')">{{ codeAnalysisMenuLabel }}</a>
+          </a-menu-item>
+
           <a-menu-item key="file-management" v-if="hasFileManagementPermission">
             <template #icon><icon-file /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/file-management')">{{ fileManagementMenuLabel }}</a>
@@ -342,6 +347,7 @@ import {
   IconList,
   IconRelation,
   IconDashboard,
+  IconCodeSquare,
 } from '@arco-design/web-vue/es/icon';
 import '@arco-design/web-vue/dist/arco.css'; // 引入 Arco Design 样式
 
@@ -395,6 +401,7 @@ const modelsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Models' : tl
 const mcpMenuLabel = computed(() => (locale.value === 'en-US' ? 'MCP' : tl('MCP配置')));
 const skillsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Skills' : tl('Skills管理')));
 const executionDashboardMenuLabel = computed(() => (locale.value === 'en-US' ? 'Exec Board' : tl('执行看板')));
+const codeAnalysisMenuLabel = computed(() => (locale.value === 'en-US' ? 'AI Code Analysis' : tl('AI 源码分析')));
 
 // 更新说明预览（显示完整内容）
 const releaseNotesPreview = computed(() => {
@@ -450,6 +457,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/llm-configs')) return 'llm-configs';
   if (path.startsWith('/langgraph-chat')) return 'langgraph-chat';
   if (path.startsWith('/dashboard/execution')) return 'execution-dashboard';
+  if (path.startsWith('/code-analysis')) return 'code-analysis';
   if (path.startsWith('/task-center')) return 'task-center';
   if (path.startsWith('/file-management')) return 'file-management';
   if (path.startsWith('/knowledge-management')) return 'knowledge-management';

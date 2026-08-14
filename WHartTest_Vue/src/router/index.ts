@@ -29,6 +29,7 @@ import TaskCenterView from '@/features/task-center/views/TaskCenterView.vue'; //
 import FileManagementView from '@/features/file-management/views/FileManagementView.vue'; // 导入文件管理页面组件。
 import ExecutionDashboardView from '@/features/execution-dashboard/views/ExecutionDashboardView.vue'; // 导入 AI 执行看板视图
 import ExecutionReplayView from '@/features/execution-dashboard/views/ExecutionReplayView.vue'; // 导入执行回放视图
+import AiAnalysisView from '@/features/code-analysis/views/AiAnalysisView.vue'; // 导入 AI 源码分析视图
 
 const routes: Array<RouteRecordRaw> = [ // 声明路由表数组，类型约束为 RouteRecordRaw。
   {
@@ -247,6 +248,11 @@ const routes: Array<RouteRecordRaw> = [ // 声明路由表数组，类型约束�
         name: 'ExecutionReplay',
         component: ExecutionReplayView,
         props: true,
+      },
+      {
+        path: 'code-analysis', // AI 源码分析
+        name: 'CodeAnalysis',
+        component: AiAnalysisView,
       },
       {
         path: 'operation-logs', // 定义操作日志路径。

@@ -145,6 +145,7 @@ INSTALLED_APPS = [
     'operation_logs',  # 用户操作日志。
     'file_management',  # 统一文件管理/附件中心。
     'execution_dashboard',  # AI执行进度看板。
+    'code_analysis',  # 源码级 AI 智能分析。
 ]
 
 # ASGI 配置（用于 Channels WebSocket）

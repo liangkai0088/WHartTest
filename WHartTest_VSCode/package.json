@@ -1,0 +1,72 @@
+{
+  "name": "wharttest-code-analysis",
+  "displayName": "WHartTest 源码分析",
+  "description": "WHartTest 平台「源码级 AI 智能分析」VS Code 客户端：上传工作区源码、查看影响用例、打开 AI 分析页",
+  "version": "0.1.0",
+  "publisher": "wharttest",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:wharttest.configure",
+    "onCommand:wharttest.uploadWorkspace",
+    "onCommand:wharttest.viewImpacts",
+    "onCommand:wharttest.openDashboard"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "wharttest.configure",
+        "title": "WHartTest: 配置服务器 / 登录"
+      },
+      {
+        "command": "wharttest.uploadWorkspace",
+        "title": "WHartTest: 上传当前工作区源码"
+      },
+      {
+        "command": "wharttest.viewImpacts",
+        "title": "WHartTest: 查看影响用例"
+      },
+      {
+        "command": "wharttest.openDashboard",
+        "title": "WHartTest: 打开 AI 源码分析页"
+      }
+    ],
+    "configuration": {
+      "title": "WHartTest 源码分析",
+      "properties": {
+        "wharttest.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8913",
+          "description": "WHartTest 后端服务地址，如 http://localhost:8913"
+        },
+        "wharttest.projectId": {
+          "type": "number",
+          "default": 0,
+          "description": "WHartTest 项目 ID（正整数；在「配置服务器/登录」时填写）"
+        },
+        "wharttest.codeProjectId": {
+          "type": "number",
+          "default": 0,
+          "description": "WHartTest 源码分析项目 ID（留空/为 0 时登录流程会自动创建）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.90.0",
+    "adm-zip": "^0.5.14",
+    "form-data": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}
