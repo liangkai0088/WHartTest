@@ -3,11 +3,13 @@
 
 提供 AI Agent 可调用的持久化工具，包括：
 - Skill 脚本执行工具（执行用户上传的 Python 脚本）
+- UI 自动化落库工具（保存 UI 自动化用例）
 
 注意：Diagram 工具（display_diagram, edit_diagram）已移至 WHartTest-Tools MCP
 """
 
 from .skill_tools import get_skill_tools
+from .ui_automation_tools import get_ui_automation_tools
 
 import logging
 
@@ -31,5 +33,14 @@ def get_builtin_tools(
     )
     tools.extend(skill_tools)
     logger.info(f"[BuiltinTools] 加载 {len(skill_tools)} 个 Skill 工具")
+
+    ui_tools = get_ui_automation_tools(
+        user_id=user_id,
+        project_id=project_id,
+        test_case_id=test_case_id,
+        chat_session_id=chat_session_id,
+    )
+    tools.extend(ui_tools)
+    logger.info(f"[BuiltinTools] 加载 {len(ui_tools)} 个 UI 自动化落库工具")
 
     return tools

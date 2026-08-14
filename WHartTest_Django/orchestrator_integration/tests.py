@@ -335,3 +335,137 @@ class TerminalOutputSanitizerTests(SimpleTestCase):
         raw = "\x1b[32m✓\x1b[0m Browser closed"
 
         self.assertEqual(strip_terminal_control_sequences(raw), "✓ Browser closed")
+
+
+class UiAutomationSaveToolsTests(TestCase):
+    """验证 UI 自动化落库工具将用例完整写入模型层级。"""
+
+    def setUp(self):
+        from ui_automation.models import (
+            UiModule,
+            UiPage,
+            UiElement,
+            UiPageSteps,
+            UiPageStepsDetailed,
+            UiTestCase,
+            UiCaseStepsDetailed,
+        )
+        from .builtin_tools.ui_automation_tools import _save_ui_automation_case
+
+        self.models = (
+            UiModule,
+            UiPage,
+            UiElement,
+            UiPageSteps,
+            UiPageStepsDetailed,
+            UiTestCase,
+            UiCaseStepsDetailed,
+        )
+        self._save = _save_ui_automation_case
+
+        self.user = get_user_model().objects.create_user(
+            username="ui-tool-user",
+            password="password123",
+        )
+        self.project = Project.objects.create(
+            name="UI Tool Project",
+            creator=self.user,
+        )
+        ProjectMember.objects.create(
+            project=self.project,
+            user=self.user,
+            role="member",
+        )
+
+    def _sample_case(self):
+        return {
+            "module_name": "登录模块",
+            "case_name": "用户登录成功",
+            "case_level": "P1",
+            "case_description": "验证用户登录",
+            "pages": [
+                {
+                    "name": "登录页",
+                    "url": "https://example.com/login",
+                    "elements": [
+                        {
+                            "name": "用户名输入框",
+                            "locator_type": "css",
+                            "locator_value": "input[name='username']",
+                        },
+                        {
+                            "name": "登录按钮",
+                            "locator_type": "text",
+                            "locator_value": "登录",
+                        },
+                    ],
+                }
+            ],
+            "steps": [
+                {
+                    "name": "登录操作",
+                    "page_name": "登录页",
+                    "actions": [
+                        {
+                            "step_type": 0,
+                            "element": "用户名输入框",
+                            "ope_key": "fill",
+                            "ope_value": {"text": "admin"},
+                        },
+                        {
+                            "step_type": 0,
+                            "element": "登录按钮",
+                            "ope_key": "click",
+                            "ope_value": None,
+                        },
+                        {
+                            "step_type": 1,
+                            "element": None,
+                            "ope_key": "assert_url",
+                            "ope_value": {"url": "https://example.com/dashboard"},
+                        },
+                    ],
+                }
+            ],
+        }
+
+    def test_save_case_creates_full_hierarchy(self):
+        result = self._save(self.project.id, self.user, self._sample_case())
+
+        self.assertTrue(result["ok"])
+        UiModule, UiPage, UiElement, UiPageSteps, UiPageStepsDetailed, UiTestCase, UiCaseStepsDetailed = self.models
+        self.assertEqual(UiModule.objects.count(), 1)
+        self.assertEqual(UiPage.objects.count(), 1)
+        self.assertEqual(UiElement.objects.count(), 2)
+        self.assertEqual(UiPageSteps.objects.count(), 1)
+        self.assertEqual(UiPageStepsDetailed.objects.count(), 3)
+        self.assertEqual(UiTestCase.objects.count(), 1)
+        self.assertEqual(UiCaseStepsDetailed.objects.count(), 1)
+
+        case = UiTestCase.objects.get(id=result["case_id"])
+        self.assertEqual(case.name, "用户登录成功")
+        self.assertEqual(case.level, "P1")
+
+        # 断言步骤无元素，正确落库
+        assert_step = UiPageStepsDetailed.objects.get(ope_key="assert_url")
+        self.assertIsNone(assert_step.element)
+        self.assertEqual(assert_step.ope_value, {"url": "https://example.com/dashboard"})
+
+    def test_save_case_reuses_existing_module_page_element(self):
+        self._save(self.project.id, self.user, self._sample_case())
+        result = self._save(self.project.id, self.user, self._sample_case())
+
+        self.assertTrue(result["ok"])
+        UiModule, UiPage, UiElement, _, _, UiTestCase, _ = self.models
+        # 模块/页面/元素复用，不重复创建
+        self.assertEqual(UiModule.objects.count(), 1)
+        self.assertEqual(UiPage.objects.count(), 1)
+        self.assertEqual(UiElement.objects.count(), 2)
+        # 每次调用都会创建新用例
+        self.assertEqual(UiTestCase.objects.count(), 2)
+
+    def test_save_case_returns_error_for_missing_project(self):
+        result = self._save(999999, self.user, self._sample_case())
+
+        self.assertFalse(result["ok"])
+        self.assertIn("项目不存在", result["error"])
