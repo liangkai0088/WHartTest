@@ -1,4 +1,4 @@
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -107,3 +107,82 @@ class KnowledgeGlobalConfigSecretHandlingTests(TestCase):
         self.assertEqual(self.config.reranker_api_key, "reranker-real-secret")
         self.assertEqual(self.config.chunk_size, 1300)
         self.assertEqual(self.config.chunk_overlap, 160)
+
+
+class DocumentImageResolveTests(TestCase):
+    """验证检索结果中 {{IMAGE:N}} 占位符被解析为 resolved_images 元数据。"""
+
+    def setUp(self):
+        from .services import VectorStoreManager
+
+        # 绕过 __init__（避免初始化 embedding/稀疏编码器）
+        self.manager = object.__new__(VectorStoreManager)
+
+    def test_resolve_images_fills_resolved_images(self):
+        results = [
+            {
+                "content": "见 {{IMAGE:0}} 与 {{IMAGE:1}}",
+                "metadata": {"document_id": "doc-1", "chunk_index": 0},
+                "similarity_score": 0.9,
+            },
+            {
+                "content": "无图片文本",
+                "metadata": {"document_id": "doc-1", "chunk_index": 1},
+                "similarity_score": 0.5,
+            },
+        ]
+        mock_qs = MagicMock()
+        mock_qs.values.return_value = [
+            {"document_id": "doc-1", "image_index": 0},
+            {"document_id": "doc-1", "image_index": 1},
+        ]
+        with patch(
+            "knowledge.services.DocumentImage.objects.filter", return_value=mock_qs
+        ):
+            resolved = self.manager._resolve_images(results)
+
+        self.assertEqual(len(resolved), 2)
+        images = resolved[0]["metadata"]["resolved_images"]
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0]["image_index"], 0)
+        self.assertIn(
+            "/api/knowledge/documents/doc-1/images/0/", images[0]["image_url"]
+        )
+        # 无图片占位符的结果不应包含 resolved_images
+        self.assertNotIn("resolved_images", resolved[1]["metadata"])
+
+    def test_resolve_images_skips_when_no_placeholder(self):
+        results = [
+            {
+                "content": "普通文本",
+                "metadata": {"document_id": "doc-1"},
+                "similarity_score": 0.8,
+            }
+        ]
+        resolved = self.manager._resolve_images(results)
+        self.assertNotIn("resolved_images", resolved[0]["metadata"])
+
+
+class DocumentImageSaveTests(TestCase):
+    """验证图片保存到 DocumentImage 的逻辑（mock 文件写入）。"""
+
+    def test_save_image_returns_incrementing_index(self):
+        from .models import Document
+        from .services import DocumentProcessor
+
+        document = MagicMock(spec=Document)
+        document.id = "doc-test-id"
+        document.images.count.return_value = 0
+
+        with patch("knowledge.services.DocumentImage.objects.create") as mock_create:
+            mock_img = MagicMock()
+            mock_create.return_value = mock_img
+
+            processor = DocumentProcessor()
+            idx = processor._save_image(document, b"fake-image-bytes", page_number=2)
+
+        self.assertEqual(idx, 0)
+        mock_create.assert_called_once()
+        # image_file.save 被调用（写入图片文件）
+        mock_img.image_file.save.assert_called_once()
+        self.assertEqual(mock_create.call_args.kwargs["page_number"], 2)

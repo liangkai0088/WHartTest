@@ -15,6 +15,7 @@ from .models import (
     KnowledgeBase,
     Document,
     DocumentChunk,
+    DocumentImage,
     QueryLog,
     KnowledgeGlobalConfig,
 )
@@ -527,6 +528,15 @@ class DocumentViewSet(BaseModelViewSet):
         if document.url:
             content_data["url"] = document.url
 
+        # 图片列表（对应内容中的 {{IMAGE:N}} 占位符）
+        content_data["images"] = [
+            {
+                "image_index": img.image_index,
+                "image_url": f"/api/knowledge/documents/{document.id}/images/{img.image_index}/",
+            }
+            for img in document.images.all().order_by("image_index")
+        ]
+
         # 如果需要包含分块信息
         if include_chunks:
             chunks = document.chunks.order_by("chunk_index")
@@ -558,6 +568,53 @@ class DocumentViewSet(BaseModelViewSet):
             content_data["chunk_count"] = document.chunks.count()
 
         return Response(content_data)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="images/(?P<image_index>[^/.]+)",
+        authentication_classes=[],
+        permission_classes=[],
+    )
+    def get_image(self, request, pk=None, image_index=None):
+        """获取文档中的图片（公开访问，用于 <img> 标签渲染）"""
+        from django.http import FileResponse
+
+        try:
+            document = Document.objects.get(pk=pk)
+            image = document.images.filter(image_index=image_index).first()
+            if not image:
+                return Response({"error": "图片不存在"}, status=status.HTTP_404_NOT_FOUND)
+            return FileResponse(
+                open(image.image_file.path, "rb"), content_type=image.content_type
+            )
+        except Document.DoesNotExist:
+            return Response({"error": "文档不存在"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"获取图片失败: {e}")
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=["get"], url_path="images")
+    def list_images(self, request, pk=None):
+        """获取文档中所有图片的元信息"""
+        document = self.get_object()
+        images = document.images.all().order_by("image_index")
+        data = [
+            {
+                "id": str(img.id),
+                "image_index": img.image_index,
+                "page_number": img.page_number,
+                "width": img.width,
+                "height": img.height,
+                "content_type": img.content_type,
+                "file_size": img.file_size,
+                "url": f"/api/knowledge/documents/{document.id}/images/{img.image_index}/",
+            }
+            for img in images
+        ]
+        return Response({"images": data, "total": len(data)})
 
     def destroy(self, request, *args, **kwargs):
         """删除文档时同时删除向量数据"""

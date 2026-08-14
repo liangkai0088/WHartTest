@@ -45,6 +45,7 @@ from .models import (
     KnowledgeBase,
     Document,
     DocumentChunk,
+    DocumentImage,
     QueryLog,
     KnowledgeGlobalConfig,
 )
@@ -455,10 +456,57 @@ class DocumentProcessor:
             else:
                 raise
 
+    def _save_image(
+        self,
+        document: Document,
+        image_bytes: bytes,
+        page_number: Optional[int] = None,
+    ) -> Optional[int]:
+        """保存图片到 DocumentImage，返回 image_index（失败返回 None）"""
+        from django.core.files.base import ContentFile
+        from PIL import Image
+        import io
+
+        try:
+            width = height = None
+            content_type = "image/png"
+            try:
+                img = Image.open(io.BytesIO(image_bytes))
+                width, height = img.size
+                if img.format:
+                    mime = Image.MIME.get(img.format)
+                    if mime:
+                        content_type = mime
+            except Exception:
+                pass
+
+            image_index = document.images.count()
+
+            doc_image = DocumentImage.objects.create(
+                document=document,
+                image_index=image_index,
+                page_number=page_number,
+                content_type=content_type,
+                width=width,
+                height=height,
+                file_size=len(image_bytes),
+            )
+
+            ext = content_type.split("/")[-1].lower() if "/" in content_type else "png"
+            if ext == "jpeg":
+                ext = "jpg"
+            filename = f"{document.id}_img_{image_index}.{ext}"
+            doc_image.image_file.save(filename, ContentFile(image_bytes), save=True)
+
+            return image_index
+        except Exception as e:
+            logger.warning(f"保存图片失败: {e}")
+            return None
+
     def _load_pdf_structured(
         self, file_path: str, document: Document
     ) -> List[LangChainDocument]:
-        """解析 PDF 文件，按页加载文本"""
+        """解析 PDF 文件，按页加载文本并提取图片"""
         try:
             from pypdf import PdfReader
         except ImportError:
@@ -472,10 +520,29 @@ class DocumentProcessor:
         for page_num, page in enumerate(reader.pages):
             content = (page.extract_text() or "").strip()
 
-            if content:
+            # 提取该页图片
+            image_placeholders = []
+            try:
+                for image_file in page.images:
+                    image_bytes = image_file.data
+                    image_index = self._save_image(
+                        document, image_bytes, page_number=page_num + 1
+                    )
+                    if image_index is not None:
+                        image_placeholders.append(f"{{{{IMAGE:{image_index}}}}}")
+            except Exception as e:
+                logger.warning(f"PDF 第{page_num + 1}页图片提取失败: {e}")
+
+            if content or image_placeholders:
+                full_content = content
+                if image_placeholders:
+                    full_content = (
+                        (content + "\n" if content else "")
+                        + "\n".join(image_placeholders)
+                    )
                 docs.append(
                     LangChainDocument(
-                        page_content=content,
+                        page_content=full_content,
                         metadata={
                             "source": document.title,
                             "document_id": str(document.id),
@@ -493,9 +560,10 @@ class DocumentProcessor:
     def _load_docx_structured(
         self, file_path: str, document: Document
     ) -> List[LangChainDocument]:
-        """结构化解析 .docx 文件，保留标题层级和表格结构"""
+        """结构化解析 .docx 文件，保留标题层级、表格结构并提取图片"""
         try:
             from docx import Document as DocxDocument
+            from docx.oxml.ns import qn
 
             doc = DocxDocument(file_path)
             logger.info(
@@ -508,6 +576,32 @@ class DocumentProcessor:
             content_parts = []
             extracted_paragraphs = 0
             extracted_tables = 0
+            extracted_images = 0
+
+            nsmap = {
+                "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+                "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                "v": "urn:schemas-microsoft-com:vml",
+            }
+            R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+            R_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+            seen_rids = set()
+
+            def extract_image_placeholder(rid):
+                if not rid or rid in seen_rids:
+                    return None
+                seen_rids.add(rid)
+                try:
+                    rel = doc.part.rels.get(rid)
+                    if rel and rel.target_part:
+                        image_index = self._save_image(
+                            document, rel.target_part.blob
+                        )
+                        if image_index is not None:
+                            return f"{{{{IMAGE:{image_index}}}}}"
+                except Exception as e:
+                    logger.warning(f"提取 docx 图片失败 (rId={rid}): {e}")
+                return None
 
             for element in doc.element.body:
                 if element.tag.endswith("p"):
@@ -518,6 +612,30 @@ class DocumentProcessor:
                             markdown_text = self._convert_paragraph_to_markdown(paragraph)
                             content_parts.append(markdown_text)
                             extracted_paragraphs += 1
+
+                        # 提取段落中的图片（w:drawing → a:blip → r:embed）
+                        drawings = element.findall(".//" + qn("w:drawing"))
+                        for drawing in drawings:
+                            blips = drawing.findall(".//a:blip", nsmap)
+                            for blip in blips:
+                                placeholder = extract_image_placeholder(
+                                    blip.get(R_EMBED)
+                                )
+                                if placeholder:
+                                    content_parts.append(placeholder)
+                                    extracted_images += 1
+
+                        # 提取 VML 图片（w:pict → v:imagedata → r:id）
+                        inline_pics = element.findall(".//" + qn("w:pict"))
+                        for pict in inline_pics:
+                            imagedatas = pict.findall(".//v:imagedata", nsmap)
+                            for imgdata in imagedatas:
+                                placeholder = extract_image_placeholder(
+                                    imgdata.get(R_ID)
+                                )
+                                if placeholder:
+                                    content_parts.append(placeholder)
+                                    extracted_images += 1
 
                 elif element.tag.endswith("tbl"):
                     table = table_map.get(element)
@@ -530,7 +648,7 @@ class DocumentProcessor:
             content = "\n\n".join(content_parts)
             logger.info(
                 f"Word 结构化解析完成 - 段落: {extracted_paragraphs}, "
-                f"表格: {extracted_tables}, 内容长度: {len(content)}"
+                f"表格: {extracted_tables}, 图片: {extracted_images}, 内容长度: {len(content)}"
             )
 
             return [
@@ -545,6 +663,7 @@ class DocumentProcessor:
                         "structured_parsing": True,
                         "paragraph_count": extracted_paragraphs,
                         "table_count": extracted_tables,
+                        "image_count": extracted_images,
                     },
                 )
             ]
@@ -1614,10 +1733,72 @@ class VectorStoreManager:
         # 根据是否有稀疏编码器选择检索方式
         if self.sparse_encoder:
             logger.info("   🔀 使用混合检索（BM25 + 稠密向量）")
-            return self._hybrid_similarity_search(query, k, score_threshold)
+            results = self._hybrid_similarity_search(query, k, score_threshold)
         else:
             logger.info("   📊 使用纯稠密向量检索")
-            return self._dense_similarity_search(query, k, score_threshold)
+            results = self._dense_similarity_search(query, k, score_threshold)
+
+        return self._resolve_images(results)
+
+    def _resolve_images(
+        self, results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """解析文本分块中的 {{IMAGE:N}} 占位符，填充 resolved_images 元数据"""
+        import re
+
+        if not results:
+            return results
+
+        doc_indices: Dict[str, set] = {}
+        for result in results:
+            content = result.get("content", "")
+            if "{{IMAGE:" not in content:
+                continue
+            document_id = result.get("metadata", {}).get("document_id")
+            if not document_id:
+                continue
+            indices = {int(m) for m in re.findall(r"\{\{IMAGE:(\d+)\}\}", content)}
+            doc_indices.setdefault(str(document_id), set()).update(indices)
+
+        if not doc_indices:
+            return results
+
+        # 批量查询图片（避免循环内查询）
+        images = []
+        try:
+            for doc_id, indices in doc_indices.items():
+                imgs = DocumentImage.objects.filter(
+                    document_id=doc_id, image_index__in=indices
+                ).values("document_id", "image_index")
+                images.extend(imgs)
+        except Exception as e:
+            logger.warning(f"批量查询图片失败: {e}")
+            return results
+
+        url_map = {
+            (str(img["document_id"]), img["image_index"]): (
+                f"/api/knowledge/documents/{img['document_id']}/images/{img['image_index']}/"
+            )
+            for img in images
+        }
+
+        for result in results:
+            content = result.get("content", "")
+            if "{{IMAGE:" not in content:
+                continue
+            document_id = str(result.get("metadata", {}).get("document_id"))
+            if not document_id:
+                continue
+            indices = [int(m) for m in re.findall(r"\{\{IMAGE:(\d+)\}\}", content)]
+            resolved = [
+                {"image_index": i, "image_url": url_map[(document_id, i)]}
+                for i in indices
+                if (document_id, i) in url_map
+            ]
+            if resolved:
+                result["metadata"]["resolved_images"] = resolved
+
+        return results
 
     def _dense_similarity_search(
         self, query: str, k: int, score_threshold: float
@@ -1904,6 +2085,9 @@ class KnowledgeBaseService:
             # 再从数据库删除分块记录
             document.chunks.all().delete()
 
+            # 清理旧图片（重新处理时避免重复累积）
+            self._clear_document_images(document)
+
             # 加载文档
             langchain_docs = self.document_processor.load_document(document)
 
@@ -1911,6 +2095,7 @@ class KnowledgeBaseService:
             total_content = "\n".join([doc.page_content for doc in langchain_docs])
             document.word_count = len(total_content.split())
             document.page_count = len(langchain_docs)
+            document.content = total_content
 
             # 向量化并存储文本分块
             vector_ids = self.vector_manager.add_documents(langchain_docs, document)
@@ -1932,6 +2117,16 @@ class KnowledgeBaseService:
 
             logger.error(f"文档处理失败: {document.id}, 错误: {e}")
             return False
+
+    def _clear_document_images(self, document: Document):
+        """清理文档已提取的图片（数据库记录 + 磁盘文件）"""
+        try:
+            for img in document.images.all():
+                if img.image_file and os.path.exists(img.image_file.path):
+                    os.remove(img.image_file.path)
+                img.delete()
+        except Exception as e:
+            logger.warning(f"清理文档图片失败: {e}")
 
     def _rewrite_query(self, query: str) -> Optional[str]:
         """用 LLM 改写查询，提升检索召回率"""
@@ -2256,6 +2451,7 @@ class KnowledgeBaseService:
         """删除文档"""
         try:
             self.vector_manager.delete_document(document)
+            self._clear_document_images(document)
             if document.file and os.path.exists(document.file.path):
                 os.remove(document.file.path)
             document.delete()

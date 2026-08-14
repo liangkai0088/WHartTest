@@ -251,6 +251,48 @@ class Document(models.Model):
         return None
 
 
+class DocumentImage(models.Model):
+    """
+    文档图片模型，存储从文档（PDF/Word 等）中提取的图片
+    图片索引 image_index 对应文本中的 {{IMAGE:N}} 占位符（N 从 0 开始）
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name='images',
+        verbose_name=_('所属文档')
+    )
+    image_file = models.ImageField(
+        _('图片文件'),
+        upload_to=document_image_upload_path
+    )
+    image_index = models.PositiveIntegerField(_('图片索引'), help_text='对应 {{IMAGE:N}} 占位符，从 0 开始')
+    page_number = models.PositiveIntegerField(_('页码'), null=True, blank=True)
+
+    # 图片元数据
+    content_type = models.CharField(_('MIME类型'), max_length=100, default='image/png')
+    width = models.IntegerField(_('宽度'), null=True, blank=True)
+    height = models.IntegerField(_('高度'), null=True, blank=True)
+    file_size = models.IntegerField(_('文件大小'), default=0)
+
+    # OCR 提取的文字（可选，用于图片内文字的检索）
+    ocr_text = models.TextField(_('OCR文本'), blank=True, null=True)
+
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('文档图片')
+        verbose_name_plural = _('文档图片')
+        ordering = ['document', 'image_index']
+        indexes = [
+            models.Index(fields=['document', 'image_index'], name='knowledge_docimage_doc_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.document.title} - 图片 {self.image_index}"
+
+
 class DocumentChunk(models.Model):
     """
     文档分块模型，存储向量化后的文档片段

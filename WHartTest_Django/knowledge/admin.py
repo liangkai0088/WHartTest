@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import KnowledgeBase, Document, DocumentChunk, QueryLog
+from .models import KnowledgeBase, Document, DocumentChunk, DocumentImage, QueryLog
 
 
 @admin.register(KnowledgeBase)
@@ -57,6 +57,14 @@ class DocumentChunkAdmin(admin.ModelAdmin):
     list_filter = ['created_at']
     search_fields = ['document__title', 'content']
     readonly_fields = ['id', 'created_at']
+
+
+@admin.register(DocumentImage)
+class DocumentImageAdmin(admin.ModelAdmin):
+    list_display = ['document', 'image_index', 'page_number', 'content_type', 'width', 'height', 'created_at']
+    list_filter = ['content_type', 'created_at']
+    search_fields = ['document__title']
+    readonly_fields = ['id', 'image_file', 'width', 'height', 'file_size', 'created_at']
 
 
 @admin.register(QueryLog)
