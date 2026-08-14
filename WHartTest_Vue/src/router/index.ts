@@ -27,6 +27,8 @@ import ApiTestingView from '@/features/api-testing/views/ApiTestingView.vue'; //
 import TraceDetailView from '@/features/ui-automation/views/TraceDetail.vue'; // 导入 UI 自动化 Trace 详情页面组件。
 import TaskCenterView from '@/features/task-center/views/TaskCenterView.vue'; // 导入任务中心视图
 import FileManagementView from '@/features/file-management/views/FileManagementView.vue'; // 导入文件管理页面组件。
+import ExecutionDashboardView from '@/features/execution-dashboard/views/ExecutionDashboardView.vue'; // 导入 AI 执行看板视图
+import ExecutionReplayView from '@/features/execution-dashboard/views/ExecutionReplayView.vue'; // 导入执行回放视图
 
 const routes: Array<RouteRecordRaw> = [ // 声明路由表数组，类型约束为 RouteRecordRaw。
   {
@@ -234,6 +236,17 @@ const routes: Array<RouteRecordRaw> = [ // 声明路由表数组，类型约束�
         path: 'file-management', // 文件管理
         name: 'FileManagement',
         component: FileManagementView,
+      },
+      {
+        path: 'dashboard/execution', // AI 执行看板
+        name: 'ExecutionDashboard',
+        component: ExecutionDashboardView,
+      },
+      {
+        path: 'dashboard/execution/replay/:runId', // 执行回放
+        name: 'ExecutionReplay',
+        component: ExecutionReplayView,
+        props: true,
       },
       {
         path: 'operation-logs', // 定义操作日志路径。

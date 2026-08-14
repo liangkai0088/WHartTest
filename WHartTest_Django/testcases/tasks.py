@@ -20,7 +20,92 @@ from .models import TestExecution, TestSuite, TestCaseResult, TestCase
 from prompts.models import UserPrompt, PromptType
 from asgiref.sync import sync_to_async
 
+# 执行进度看板事件推送（可选依赖）
+# 看板模块任何故障都不影响测试执行：import 与 emit 均被隔离保护。
+try:
+    from execution_dashboard.services import emit_execution_event, compute_eta
+except Exception:
+    logger = logging.getLogger(__name__)
+    logger.warning("execution_dashboard 不可用，执行进度事件将不会推送", exc_info=True)
+    emit_execution_event = None
+    compute_eta = None
+
 logger = logging.getLogger(__name__)
+
+
+def _emit(event_type, run, **kwargs):
+    """安全包装 emit_execution_event，任何异常都不影响测试执行。"""
+    if emit_execution_event is None:
+        return
+    try:
+        emit_execution_event(run, event_type, **kwargs)
+    except Exception:
+        logger.exception("推送执行进度事件失败: %s (run=%s)", event_type, run.id)
+
+
+def _emit_node_status(run, result, status, started_at=None, execution_time=None, error_message=None):
+    """推送单个用例结果状态变化事件。"""
+    payload = {
+        'node_id': result.id,
+        'testcase_id': result.testcase_id,
+        'name': result.testcase.name,
+        'status': status,
+    }
+    if started_at is not None:
+        payload['started_at'] = started_at
+    if execution_time is not None:
+        payload['execution_time'] = execution_time
+    if error_message is not None:
+        payload['error_message'] = error_message
+    _emit(
+        'node_status_changed', run,
+        node_id=result.id, status=status, payload=payload,
+    )
+
+
+def _emit_stats(run):
+    """推送执行统计事件。"""
+    running = run.results.filter(status='running').count()
+    pending = run.results.filter(status='pending').count()
+    elapsed = None
+    if run.started_at:
+        elapsed = (timezone.now() - run.started_at).total_seconds()
+    _emit('run_stats', run, payload={
+        'total': run.total_count,
+        'passed': run.passed_count,
+        'failed': run.failed_count,
+        'skipped': run.skipped_count,
+        'error': run.error_count,
+        'running': running,
+        'pending': pending,
+        'pass_rate': run.pass_rate,
+        'elapsed': elapsed,
+    })
+
+
+def _emit_eta(run):
+    """推送 ETA 估算事件。"""
+    if compute_eta is None:
+        return
+    try:
+        eta = compute_eta(run)
+    except Exception:
+        logger.exception("计算 ETA 失败: run=%s", run.id)
+        return
+    _emit('eta_update', run, payload=eta)
+
+
+def _emit_run_finished(run):
+    """推送执行完成事件。"""
+    _emit('run_finished', run, payload={
+        'status': run.status,
+        'pass_rate': run.pass_rate,
+        'duration': run.duration,
+        'passed': run.passed_count,
+        'failed': run.failed_count,
+        'skipped': run.skipped_count,
+        'error': run.error_count,
+    })
 
 
 @shared_task(bind=True, name='testcases.execute_test_suite')
@@ -54,6 +139,14 @@ def execute_test_suite(self, execution_id):
         execution.total_count = testcases.count()
         execution.save(update_fields=['total_count', 'updated_at'])
         
+        # 推送执行开始事件
+        _emit('run_started', execution, payload={
+            'suite_name': suite.name,
+            'total': execution.total_count,
+            'max_concurrent': suite.max_concurrent_tasks,
+            'executor': execution.executor.username if execution.executor else None,
+        })
+        
         # 收集所有待执行的任务
         all_tasks = []
         
@@ -85,6 +178,9 @@ def execute_test_suite(self, execution_id):
         execution.status = 'completed' if execution.status != 'cancelled' else 'cancelled'
         execution.completed_at = timezone.now()
         execution.save(update_fields=['status', 'completed_at', 'updated_at'])
+        
+        # 推送执行完成事件
+        _emit_run_finished(execution)
         
         logger.info(f"测试套件执行完成: {suite.name}, "
                    f"通过: {execution.passed_count}, "
@@ -120,6 +216,8 @@ def execute_test_suite(self, execution_id):
             execution.status = 'failed'
             execution.completed_at = timezone.now()
             execution.save(update_fields=['status', 'completed_at', 'updated_at'])
+            # 推送执行失败事件
+            _emit_run_finished(execution)
         except:
             pass
             
@@ -139,6 +237,12 @@ def execute_single_testcase(result: TestCaseResult):
     result.status = 'running'
     result.started_at = timezone.now()
     result.save(update_fields=['status', 'started_at', 'updated_at'])
+    
+    # 推送节点运行中事件
+    _emit_node_status(
+        result.execution, result, 'running',
+        started_at=result.started_at.isoformat() if result.started_at else None,
+    )
     
     try:
         # 在新的事件循环中运行异步执行
@@ -196,6 +300,12 @@ async def _execute_tasks_concurrently(execution, tasks_list, max_concurrent):
                 task_obj.started_at = timezone.now()
                 await sync_to_async(task_obj.save)()
                 
+                # 推送节点运行中事件
+                await sync_to_async(_emit_node_status)(
+                    execution, task_obj, 'running',
+                    started_at=task_obj.started_at.isoformat() if task_obj.started_at else None,
+                )
+                
                 # 执行测试用例
                 await _execute_testcase_via_chat_api(task_obj)
                 task_name = task_obj.testcase.name
@@ -217,6 +327,16 @@ async def _execute_tasks_concurrently(execution, tasks_list, max_concurrent):
                 # 更新统计（使用原子操作避免竞态）
                 await sync_to_async(_update_execution_counts)(execution, normalized_status)
                 
+                # 推送节点最终状态 + 统计 + ETA
+                await sync_to_async(_emit_node_status)(
+                    execution, task_obj, normalized_status,
+                    execution_time=task_obj.execution_time,
+                    error_message=task_obj.error_message,
+                )
+                await sync_to_async(execution.refresh_from_db)()
+                await sync_to_async(_emit_stats)(execution)
+                await sync_to_async(_emit_eta)(execution)
+                
             except Exception as e:
                 task_name = task_obj.testcase.name
                     
@@ -235,6 +355,16 @@ async def _execute_tasks_concurrently(execution, tasks_list, max_concurrent):
                 
                 # 更新错误计数
                 await sync_to_async(_update_execution_counts)(execution, 'error')
+                
+                # 推送节点错误状态 + 统计 + ETA
+                await sync_to_async(_emit_node_status)(
+                    execution, task_obj, 'error',
+                    execution_time=task_obj.execution_time,
+                    error_message=task_obj.error_message,
+                )
+                await sync_to_async(execution.refresh_from_db)()
+                await sync_to_async(_emit_stats)(execution)
+                await sync_to_async(_emit_eta)(execution)
     
     # 创建所有任务
     async_tasks = [execute_with_semaphore(task) for task in tasks_list]
@@ -742,10 +872,29 @@ def cancel_test_execution(execution_id):
             execution.save(update_fields=['status', 'completed_at', 'updated_at'])
             
             # 取消所有pending状态的测试用例结果
-            execution.results.filter(status='pending').update(
+            # 先读取待取消节点用于事件推送，再批量更新（保持原有批量 update 行为）
+            cancel_results = list(
+                execution.results.filter(status__in=['pending', 'running']).select_related('testcase')
+            )
+            pending_ids = [r.id for r in cancel_results if r.status == 'pending']
+            execution.results.filter(id__in=pending_ids).update(
                 status='skip',
                 completed_at=timezone.now()
             )
+            # 推送节点跳过事件（每个待取消节点一条）
+            for r in cancel_results:
+                _emit_node_status(execution, r, 'skip')
+            
+            # 推送执行取消事件（跳过数按数据库实际状态统计）
+            _emit('run_finished', execution, payload={
+                'status': 'cancelled',
+                'pass_rate': execution.pass_rate,
+                'duration': execution.duration,
+                'passed': execution.passed_count,
+                'failed': execution.failed_count,
+                'skipped': execution.results.filter(status='skip').count(),
+                'error': execution.error_count,
+            })
             
             logger.info(f"测试执行已取消: {execution_id}")
             return {'success': True, 'message': '测试执行已取消'}

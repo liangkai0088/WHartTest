@@ -176,6 +176,11 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/task-center')">{{ tasksMenuLabel }}</a>
           </a-menu-item>
 
+          <a-menu-item key="execution-dashboard">
+            <template #icon><icon-dashboard /></template>
+            <a href="#" @click="checkProjectAndNavigate($event, '/dashboard/execution')">{{ executionDashboardMenuLabel }}</a>
+          </a-menu-item>
+
           <a-menu-item key="file-management" v-if="hasFileManagementPermission">
             <template #icon><icon-file /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/file-management')">{{ fileManagementMenuLabel }}</a>
@@ -336,6 +341,7 @@ import {
   IconMoonFill,
   IconList,
   IconRelation,
+  IconDashboard,
 } from '@arco-design/web-vue/es/icon';
 import '@arco-design/web-vue/dist/arco.css'; // 引入 Arco Design 样式
 
@@ -388,6 +394,7 @@ const operationLogsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Logs'
 const modelsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Models' : tl('LLM配置')));
 const mcpMenuLabel = computed(() => (locale.value === 'en-US' ? 'MCP' : tl('MCP配置')));
 const skillsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Skills' : tl('Skills管理')));
+const executionDashboardMenuLabel = computed(() => (locale.value === 'en-US' ? 'Exec Board' : tl('执行看板')));
 
 // 更新说明预览（显示完整内容）
 const releaseNotesPreview = computed(() => {
@@ -442,6 +449,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/operation-logs')) return 'operation-logs';
   if (path.startsWith('/llm-configs')) return 'llm-configs';
   if (path.startsWith('/langgraph-chat')) return 'langgraph-chat';
+  if (path.startsWith('/dashboard/execution')) return 'execution-dashboard';
   if (path.startsWith('/task-center')) return 'task-center';
   if (path.startsWith('/file-management')) return 'file-management';
   if (path.startsWith('/knowledge-management')) return 'knowledge-management';
