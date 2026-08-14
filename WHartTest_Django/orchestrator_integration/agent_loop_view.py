@@ -42,11 +42,20 @@ from langchain_core.messages import (
 from langchain.agents import create_agent
 from wharttest_django.checkpointer import get_async_checkpointer
 
+from .agent_review_service import (
+    REVIEW_MODE_MULTI,
+    build_generation_snapshot,
+    complete_review_run,
+    normalize_review_mode,
+    normalize_review_thresholds,
+    run_review_pipeline,
+)
 from .middleware_config import (
     get_middleware_from_config,
     get_user_tool_approvals,
     get_user_friendly_llm_error,
 )
+from .models import AgentReviewRun
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
 from .stop_signal import should_stop, clear_stop_signal
 from langgraph_integration.models import ChatSession, LLMConfig
@@ -853,6 +862,8 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        agent_review_mode: str = "single",
+        agent_review_options: Optional[Dict[str, Any]] = None,
     ):
         """
         创建 SSE 流式生成器（LangChain v1 重构版）
@@ -862,6 +873,8 @@ class AgentLoopStreamAPIView(View):
         """
         thread_id = f"{request.user.id}_{project_id}_{session_id}"
         file_ids = file_ids or []
+        agent_review_mode = normalize_review_mode(agent_review_mode)
+        review_thresholds = normalize_review_thresholds(agent_review_options)
         try:
             attached_files = await sync_to_async(validate_file_ids)(file_ids, project, request.user)
             llm_attachment_context = await sync_to_async(build_llm_attachment_context)(attached_files)
@@ -1105,6 +1118,11 @@ class AgentLoopStreamAPIView(View):
                 current_tool_calls = []
                 interrupt_detected = False
                 user_stopped = False
+                final_content_parts: List[str] = []
+                tool_results_for_review: List[Dict[str, Any]] = []
+                review_complete_payload = None
+                repair_content_parts: List[str] = []
+                current_agent_phase = "generation"
 
                 # 15. 流式执行
                 stream_modes = ["updates", "messages"]
@@ -1293,6 +1311,7 @@ class AgentLoopStreamAPIView(View):
                                                         "step": step_count,
                                                         "max_steps": self.MAX_STEPS,
                                                         "tools": tool_names_in_step,
+                                                        "phase": current_agent_phase,
                                                     }
                                                 )
                                                 logger.info(
@@ -1318,21 +1337,24 @@ class AgentLoopStreamAPIView(View):
                                                     process_mcp_tool_output(content)
                                                 )
 
-                                                yield create_sse_data(
-                                                    {
-                                                        "type": "tool_result",
-                                                        "tool_name": tool_name,
-                                                        "tool_output": content,
-                                                        "summary": summary,
-                                                        "step": step_count,
-                                                    }
-                                                )
+                                                tool_result_event = {
+                                                    "type": "tool_result",
+                                                    "tool_name": tool_name,
+                                                    "tool_output": content,
+                                                    "summary": summary,
+                                                    "step": step_count,
+                                                    "phase": current_agent_phase,
+                                                }
+                                                if current_agent_phase == "generation":
+                                                    tool_results_for_review.append(tool_result_event)
+                                                yield create_sse_data(tool_result_event)
                                         # 步骤完成
                                         if step_count > 0:
                                             yield create_sse_data(
                                                 {
                                                     "type": "step_complete",
                                                     "step": step_count,
+                                                    "phase": current_agent_phase,
                                                 }
                                             )
 
@@ -1346,16 +1368,24 @@ class AgentLoopStreamAPIView(View):
                                     # 检查是否是 ToolMessage（通过类名或 type 属性）
                                     token_type = type(token).__name__
                                     if "ToolMessage" not in token_type:
+                                        if current_agent_phase == "generation":
+                                            final_content_parts.append(str(token.content))
+                                        else:
+                                            repair_content_parts.append(str(token.content))
                                         yield create_sse_data(
-                                            {"type": "stream", "data": token.content}
+                                            {"type": "stream", "data": token.content, "phase": current_agent_phase}
                                         )
                             elif hasattr(chunk, "content") and chunk.content:
                                 # 兼容旧版本可能直接返回 message 的情况
                                 # 同样过滤掉 ToolMessage
                                 chunk_type = type(chunk).__name__
                                 if "ToolMessage" not in chunk_type:
+                                    if current_agent_phase == "generation":
+                                        final_content_parts.append(str(chunk.content))
+                                    else:
+                                        repair_content_parts.append(str(chunk.content))
                                     yield create_sse_data(
-                                        {"type": "stream", "data": chunk.content}
+                                        {"type": "stream", "data": chunk.content, "phase": current_agent_phase}
                                     )
 
                 except Exception as e:
@@ -1463,7 +1493,146 @@ class AgentLoopStreamAPIView(View):
                         "AgentLoopStreamAPI: Interrupt detected, returning early"
                     )
                 else:
+                    if agent_review_mode == REVIEW_MODE_MULTI:
+                        generation_snapshot = build_generation_snapshot(
+                            user_message=user_message,
+                            generated_content="".join(final_content_parts),
+                            tool_results=tool_results_for_review,
+                            project_id=project_id,
+                            session_id=session_id,
+                            test_case_id=test_case_id,
+                            generate_playwright_script=generate_playwright_script,
+                        )
+                        review_run = await sync_to_async(AgentReviewRun.objects.create)(
+                            user=request.user,
+                            project=project,
+                            chat_session=chat_session,
+                            session_id=session_id,
+                            thread_id=thread_id,
+                            test_case_id=test_case_id,
+                            mode=agent_review_mode,
+                            status="reviewing",
+                            thresholds=review_thresholds,
+                            generation_snapshot=generation_snapshot,
+                        )
+                        yield create_sse_data(
+                            {
+                                "type": "review_start",
+                                "review_run_id": review_run.id,
+                                "reviewers": ["ui_locator", "assertion_logic", "boundary_scenario"],
+                            }
+                        )
+                        try:
+                            review_result = await run_review_pipeline(
+                                llm=llm,
+                                review_run=review_run,
+                                generation_snapshot=generation_snapshot,
+                                thresholds=review_thresholds,
+                            )
+                            yield create_sse_data(
+                                {"type": "review_result", **review_result.to_event_payload()}
+                            )
+                            yield create_sse_data(
+                                {
+                                    "type": "review_route",
+                                    "status": review_result.status,
+                                    "needs_repair": review_result.needs_repair,
+                                    "route_reason": review_result.route_reason,
+                                    "review_run_id": review_run.id,
+                                }
+                            )
+
+                            if review_result.needs_repair and review_result.repair_prompt:
+                                current_agent_phase = "repair"
+                                yield create_sse_data(
+                                    {
+                                        "type": "repair_start",
+                                        "review_run_id": review_run.id,
+                                        "message": "审查发现高置信度问题，正在自动修复",
+                                    }
+                                )
+                                repair_input = {"messages": [HumanMessage(content=review_result.repair_prompt)]}
+                                async for repair_stream_mode, repair_chunk in agent.astream(
+                                    repair_input,
+                                    config=invoke_config,
+                                    stream_mode=["messages"],
+                                ):
+                                    if should_stop(session_id):
+                                        user_stopped = True
+                                        clear_stop_signal(session_id)
+                                        break
+                                    if repair_stream_mode != "messages":
+                                        continue
+                                    repair_token = repair_chunk[0] if isinstance(repair_chunk, tuple) and repair_chunk else repair_chunk
+                                    if not hasattr(repair_token, "content") or not repair_token.content:
+                                        continue
+                                    if "ToolMessage" in type(repair_token).__name__:
+                                        continue
+                                    repair_content_parts.append(str(repair_token.content))
+                                    yield create_sse_data(
+                                        {
+                                            "type": "stream",
+                                            "data": repair_token.content,
+                                            "phase": current_agent_phase,
+                                        }
+                                    )
+                                repair_result_text = "".join(repair_content_parts)
+                                final_status = "failed" if user_stopped else "repaired"
+                                await sync_to_async(complete_review_run)(
+                                    review_run,
+                                    status=final_status,
+                                    repair_result=repair_result_text,
+                                )
+                                review_complete_payload = {
+                                    **review_result.to_complete_payload(),
+                                    "status": final_status,
+                                    "needs_repair": final_status != "repaired",
+                                }
+                                yield create_sse_data(
+                                    {
+                                        "type": "repair_complete",
+                                        "status": final_status,
+                                        "review_run_id": review_run.id,
+                                    }
+                                )
+                            else:
+                                await sync_to_async(complete_review_run)(
+                                    review_run,
+                                    status=review_result.status,
+                                )
+                                review_complete_payload = review_result.to_complete_payload()
+                        except Exception as review_error:
+                            logger.error(
+                                "AgentLoopStreamAPI: Review pipeline failed. session_id=%s, error=%s",
+                                session_id,
+                                review_error,
+                                exc_info=True,
+                            )
+                            await sync_to_async(complete_review_run)(
+                                review_run,
+                                status="failed",
+                                error_message=str(review_error),
+                            )
+                            review_complete_payload = {
+                                "mode": REVIEW_MODE_MULTI,
+                                "status": "failed",
+                                "review_run_id": review_run.id,
+                                "needs_repair": False,
+                                "route_reason": str(review_error),
+                            }
+                            yield create_sse_data(
+                                {
+                                    "type": "review_result",
+                                    "mode": REVIEW_MODE_MULTI,
+                                    "status": "failed",
+                                    "review_run_id": review_run.id,
+                                    "route_reason": str(review_error),
+                                }
+                            )
+
                     complete_data = {"type": "complete", "total_steps": step_count}
+                    if review_complete_payload:
+                        complete_data["review_pipeline"] = review_complete_payload
                     if generate_playwright_script:
                         complete_data["script_generation"] = {
                             "enabled": True,
@@ -1545,6 +1714,8 @@ class AgentLoopStreamAPIView(View):
         generate_playwright_script = body_data.get("generate_playwright_script", False)
         test_case_id = body_data.get("test_case_id")  # 用于关联生成的脚本
         use_pytest = body_data.get("use_pytest", True)  # 生成 pytest 格式还是简单格式
+        agent_review_mode = normalize_review_mode(body_data.get("agent_review_mode"))
+        agent_review_options = body_data.get("agent_review_options", {})
 
         # 兜底：如果前端没传 test_case_id，尝试从消息中解析
         if not test_case_id and user_message:
@@ -1605,6 +1776,8 @@ class AgentLoopStreamAPIView(View):
                     test_case_id,
                     use_pytest,
                     file_ids,
+                    agent_review_mode,
+                    agent_review_options,
                 ):
                     yield chunk
 
@@ -1630,6 +1803,8 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                agent_review_mode,
+                agent_review_options,
             )
 
     async def _handle_non_stream_request(
@@ -1647,6 +1822,8 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        agent_review_mode: str = "single",
+        agent_review_options: Optional[Dict[str, Any]] = None,
     ) -> JsonResponse:
         """
         处理非流式请求，收集所有流式事件后返回统一 JSON 响应
@@ -1662,6 +1839,7 @@ class AgentLoopStreamAPIView(View):
         error_details = None
         interrupt_info = None
         script_generation = None
+        review_pipeline = None
 
         try:
             async for chunk in self._create_stream_generator(
@@ -1678,6 +1856,8 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                agent_review_mode,
+                agent_review_options,
             ):
                 # 解析 SSE 数据
                 if isinstance(chunk, str) and chunk.startswith("data: "):
@@ -1719,6 +1899,8 @@ class AgentLoopStreamAPIView(View):
                         elif event_type == "complete":
                             if event.get("script_generation"):
                                 script_generation = event.get("script_generation")
+                            if event.get("review_pipeline"):
+                                review_pipeline = event.get("review_pipeline")
                     except json.JSONDecodeError:
                         continue
 
@@ -1742,6 +1924,9 @@ class AgentLoopStreamAPIView(View):
 
             if script_generation:
                 response_data["script_generation"] = script_generation
+
+            if review_pipeline:
+                response_data["review_pipeline"] = review_pipeline
 
             return api_success_response("Chat completed", response_data)
 

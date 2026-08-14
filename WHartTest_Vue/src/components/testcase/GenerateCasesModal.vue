@@ -162,6 +162,17 @@
         </div>
       </div>
 
+      <div class="form-row review-mode-row">
+        <div class="form-row-item full-width">
+          <span class="form-row-label">{{ pageText.reviewMode }}</span>
+          <a-radio-group v-model="formState.agentReviewMode" type="button">
+            <a-radio value="single">{{ pageText.singleAgentMode }}</a-radio>
+            <a-radio value="multi_review">{{ pageText.multiAgentReviewMode }}</a-radio>
+          </a-radio-group>
+          <div class="review-mode-desc">{{ pageText.reviewModeDesc }}</div>
+        </div>
+      </div>
+
       <!-- 用例选择表格：知识库补全、知识生成模式显示 -->
       <div v-if="showTestCaseSelector" class="testcase-selector-section">
         <div class="section-label">{{ pageText.selectCases }}</div>
@@ -320,6 +331,10 @@ const pageText = computed(() => (
         linkedKnowledgeBase: 'Knowledge base',
         saveModule: 'Save to',
         selectCases: 'Select cases',
+        reviewMode: 'Review mode',
+        singleAgentMode: 'Single Agent',
+        multiAgentReviewMode: 'Multi-Agent review',
+        reviewModeDesc: 'Multi-Agent review adds UI locator, assertion, and boundary checks before optional repair.',
         selectPlaceholder: 'Please select',
         requirementModulePlaceholder: 'Select a document first, then choose modules',
         noGeneralPrompts: 'No prompts yet. Create one first.',
@@ -362,6 +377,10 @@ const pageText = computed(() => (
         linkedKnowledgeBase: '关联知识库',
         saveModule: '保存模块',
         selectCases: '选择用例',
+        reviewMode: '审查模式',
+        singleAgentMode: '单Agent模式',
+        multiAgentReviewMode: '多Agent审查模式',
+        reviewModeDesc: '多Agent审查会增加 UI 定位、断言逻辑、边界场景审查，并按阈值自动修复。',
         selectPlaceholder: '请选择',
         requirementModulePlaceholder: '请先选择需求文档后多选需求模块',
         noGeneralPrompts: '没有可用的通用提示词，请先创建。',
@@ -450,6 +469,7 @@ const formState = reactive({
   knowledgeBaseId: null as string | null,
   testCaseModuleId: null,
   testTypes: ['functional'] as string[],
+  agentReviewMode: 'single' as 'single' | 'multi_review',
 });
 
 const currentProjectName = computed(() => projectStore.currentProject?.name || pageText.value.unnamedProject);
@@ -776,6 +796,7 @@ watch(() => props.visible, (newVal) => {
     formState.knowledgeBaseId = null;
     formState.testCaseModuleId = null;
     formState.testTypes = ['functional'];
+    formState.agentReviewMode = 'single';
     requirementDocuments.value = [];
     requirementModules.value = [];
     prompts.value = [];
@@ -834,6 +855,16 @@ watch(() => props.visible, (newVal) => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.review-mode-desc {
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .form-row-label {

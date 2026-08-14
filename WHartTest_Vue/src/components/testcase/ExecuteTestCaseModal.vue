@@ -23,6 +23,16 @@
       <a-divider orientation="left">执行选项</a-divider>
 
       <a-form :model="formData" layout="vertical">
+        <a-form-item label="审查模式">
+          <a-radio-group v-model="formData.agentReviewMode" type="button">
+            <a-radio value="single">单Agent模式</a-radio>
+            <a-radio value="multi_review">多Agent审查模式</a-radio>
+          </a-radio-group>
+          <div class="review-mode-desc">
+            多Agent审查会增加 UI 定位、断言逻辑、边界场景审查，并按阈值自动修复。
+          </div>
+        </a-form-item>
+
         <a-form-item>
           <a-checkbox v-model="formData.generatePlaywrightScript">
             <span class="checkbox-label">
@@ -49,7 +59,7 @@ interface Props {
 
 interface Emits {
   (e: 'update:visible', value: boolean): void;
-  (e: 'confirm', options: { generatePlaywrightScript: boolean }): void;
+  (e: 'confirm', options: { generatePlaywrightScript: boolean; agentReviewMode: 'single' | 'multi_review' }): void;
 }
 
 const props = defineProps<Props>();
@@ -62,6 +72,7 @@ const internalVisible = computed({
 
 const formData = ref({
   generatePlaywrightScript: false,
+  agentReviewMode: 'single' as 'single' | 'multi_review',
 });
 
 // 重置表单
@@ -71,6 +82,7 @@ watch(
     if (val) {
       formData.value = {
         generatePlaywrightScript: false,
+        agentReviewMode: 'single',
       };
     }
   }
@@ -89,6 +101,7 @@ const getLevelColor = (level?: string) => {
 const handleConfirm = () => {
   emit('confirm', {
     generatePlaywrightScript: formData.value.generatePlaywrightScript,
+    agentReviewMode: formData.value.agentReviewMode,
   });
   internalVisible.value = false;
 };
@@ -102,6 +115,13 @@ const handleCancel = () => {
 .execute-modal-content {
   .testcase-info {
     margin-bottom: 16px;
+  }
+
+  .review-mode-desc {
+    color: var(--color-text-3);
+    font-size: 12px;
+    line-height: 1.5;
+    margin-top: 6px;
   }
 
   .checkbox-label {

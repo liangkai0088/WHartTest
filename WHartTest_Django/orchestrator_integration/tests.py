@@ -16,6 +16,13 @@ from .agent_loop_view import (
     _normalize_uploaded_image_base64_list,
     _prepare_agent_loop_human_message,
 )
+from .agent_review_prompts import render_review_prompt
+from .agent_review_service import (
+    _decide_route,
+    _get_confirmed_issues,
+    normalize_review_mode,
+    normalize_review_thresholds,
+)
 from .builtin_tools.skill_tools import (
     _build_skill_artifacts_dir,
     _collect_skill_artifacts,
@@ -136,6 +143,91 @@ class UploadedImageNormalizationTests(SimpleTestCase):
         result = _normalize_uploaded_image_base64_list(None, " legacy-img ")
 
         self.assertEqual(result, ["legacy-img"])
+
+
+class AgentReviewPipelineTests(SimpleTestCase):
+    def test_normalize_review_mode_defaults_to_single(self):
+        self.assertEqual(normalize_review_mode(None), "single")
+        self.assertEqual(normalize_review_mode("unknown"), "single")
+        self.assertEqual(normalize_review_mode("multi_review"), "multi_review")
+
+    def test_normalize_review_thresholds_accepts_frontend_aliases(self):
+        thresholds = normalize_review_thresholds(
+            {
+                "quality_threshold": 90,
+                "confidence_threshold": 0.8,
+                "issue_confidence_threshold": 0.6,
+            }
+        )
+
+        self.assertEqual(thresholds["quality_score"], 90)
+        self.assertEqual(thresholds["confidence"], 0.8)
+        self.assertEqual(thresholds["issue_confidence"], 0.6)
+
+    def test_high_confidence_high_issue_routes_to_repair(self):
+        review_results = [
+            {
+                "issues": [
+                    {
+                        "severity": "high",
+                        "confidence": 0.9,
+                        "target": "step-1",
+                    }
+                ]
+            }
+        ]
+        thresholds = normalize_review_thresholds({})
+
+        confirmed = _get_confirmed_issues(
+            review_results,
+            issue_confidence_threshold=thresholds["issue_confidence"],
+        )
+        status, needs_repair, reason = _decide_route(
+            aggregate_score=95,
+            aggregate_confidence=0.9,
+            confirmed_issues=confirmed,
+            thresholds=thresholds,
+        )
+
+        self.assertEqual(status, "repairing")
+        self.assertTrue(needs_repair)
+        self.assertIn("自动路由", reason)
+
+    def test_low_confidence_review_skips_auto_repair(self):
+        thresholds = normalize_review_thresholds({})
+
+        status, needs_repair, reason = _decide_route(
+            aggregate_score=50,
+            aggregate_confidence=0.3,
+            confirmed_issues=[],
+            thresholds=thresholds,
+        )
+
+        self.assertEqual(status, "skipped")
+        self.assertFalse(needs_repair)
+        self.assertIn("置信度", reason)
+
+    def test_passing_review_does_not_route_to_repair(self):
+        thresholds = normalize_review_thresholds({})
+
+        status, needs_repair, reason = _decide_route(
+            aggregate_score=90,
+            aggregate_confidence=0.9,
+            confirmed_issues=[],
+            thresholds=thresholds,
+        )
+
+        self.assertEqual(status, "passed")
+        self.assertFalse(needs_repair)
+        self.assertIn("审查通过", reason)
+
+    def test_review_prompt_contains_strict_json_schema(self):
+        prompt = render_review_prompt("ui_locator", '{"generated_content":"demo"}')
+
+        self.assertIn("严格输出 JSON", prompt)
+        self.assertIn("ui_locator", prompt)
+        self.assertIn("quality_score", prompt)
+        self.assertIn("generated_content", prompt)
 
 
 class AgentLoopRequirementImageMessageTests(TestCase):

@@ -1,6 +1,14 @@
 /**
  * 对话请求体
  */
+export type AgentReviewMode = 'single' | 'multi_review';
+
+export interface AgentReviewOptions {
+  quality_threshold?: number;
+  confidence_threshold?: number;
+  issue_confidence_threshold?: number;
+}
+
 export interface ChatRequest {
   message: string; // 用户发送的消息
   session_id?: string; // 可选, 字符串, 用于区分同一用户的不同对话会话/窗口
@@ -19,10 +27,14 @@ export interface ChatRequest {
   image?: string; // 图片base64编码（不含前缀），可选
   images?: string[]; // 多张图片base64编码（不含前缀），可选
   file_ids?: number[]; // 附件 file_id 列表，可选
-  
+
   // Playwright 脚本生成参数
   generate_playwright_script?: boolean; // 是否在任务完成后自动生成 Playwright 脚本
   test_case_id?: number; // 关联的测试用例ID，生成脚本时必需
+
+  // 多 Agent 审查参数
+  agent_review_mode?: AgentReviewMode; // 单 Agent / 多 Agent 审查模式
+  agent_review_options?: AgentReviewOptions; // 审查质量与置信度阈值
 }
 
 /**
