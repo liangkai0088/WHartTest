@@ -117,7 +117,9 @@ ENV PYTHONUNBUFFERED=1 \
     FASTEMBED_CACHE_PATH=/root/.cache/fastembed \
     USER_AGENT="WHartTest/2.6.0-ce" \
     HF_ENDPOINT=${HF_ENDPOINT} \
-    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST}
+    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST} \
+    PLAYWRIGHT_BROWSERS_PATH="/root/.cache/ms-playwright" \
+    PUPPETEER_EXECUTABLE_PATH="/usr/bin/chromium"
 
 # 仅安装运行时必需的系统依赖
 RUN if [ "$APT_BASE_URL" != "http://deb.debian.org" ]; then \
@@ -238,6 +240,31 @@ RUN set -eux; \
       agent-browser install; \
     fi
 
+# 安装 midscene CLI 视觉引擎（@midscene/cli）。
+# puppeteer 通过 PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium 复用 Playwright
+# 已安装的 Chromium（ARM64 上 puppeteer 自带 Chrome for Testing 不可用）。
+RUN set -eux; \
+    install_midscene() { \
+      for registry in "https://registry.npmmirror.com" "${NPM_REGISTRY}" "https://registry.npmjs.org"; do \
+        [ -n "$registry" ] || continue; \
+        echo "npm install @midscene/cli via $registry"; \
+        if npm --registry "$registry" \
+          --fetch-timeout=60000 \
+          --fetch-retries=2 \
+          --fetch-retry-mintimeout=5000 \
+          --fetch-retry-maxtimeout=30000 \
+          --no-audit \
+          --no-fund \
+          install -g @midscene/cli@1.10.12; then \
+          return 0; \
+        fi; \
+        echo "npm install @midscene/cli failed via $registry, trying next registry..." >&2; \
+      done; \
+      return 1; \
+    }; \
+    install_midscene; \
+    midscene --version
+
 # 复制随仓库提交的 BM25 平铺模型目录（运行时通过 specific_model_path 离线加载）
 COPY bm25_model /app/bm25_model
 
@@ -282,6 +309,7 @@ COPY weixin_integration/ /app/weixin_integration/
 COPY testcase_templates/ /app/testcase_templates/
 COPY testcases/ /app/testcases/
 COPY wharttest_django/ /app/wharttest_django/
+COPY web_qa/ /app/web_qa/
 
 # 清理不必要的文件
 RUN find /app -type f \( -name "*.sqlite*" -o -name "*.db" -o -name "*.sql" \) -delete && \

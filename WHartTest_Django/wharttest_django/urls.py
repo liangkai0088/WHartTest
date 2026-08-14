@@ -181,6 +181,8 @@ urlpatterns = [
     path("api/", include("execution_dashboard.urls")),
     # 挂载源码级 AI 智能分析路由。
     path("api/", include("code_analysis.urls")),
+    # 挂载 Web QA 智能测试路由。
+    path("api/", include("web_qa.urls")),
     # 挂载 OpenAPI schema 接口。
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     # 挂载 Swagger UI。

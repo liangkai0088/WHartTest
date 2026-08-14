@@ -30,6 +30,7 @@ import FileManagementView from '@/features/file-management/views/FileManagementV
 import ExecutionDashboardView from '@/features/execution-dashboard/views/ExecutionDashboardView.vue'; // 导入 AI 执行看板视图
 import ExecutionReplayView from '@/features/execution-dashboard/views/ExecutionReplayView.vue'; // 导入执行回放视图
 import AiAnalysisView from '@/features/code-analysis/views/AiAnalysisView.vue'; // 导入 AI 源码分析视图
+import WebQaView from '@/features/web-qa/views/WebQaView.vue'; // 导入 Web QA 视图
 
 const routes: Array<RouteRecordRaw> = [ // 声明路由表数组，类型约束为 RouteRecordRaw。
   {
@@ -253,6 +254,11 @@ const routes: Array<RouteRecordRaw> = [ // 声明路由表数组，类型约束�
         path: 'code-analysis', // AI 源码分析
         name: 'CodeAnalysis',
         component: AiAnalysisView,
+      },
+      {
+        path: 'web-qa', // Web QA
+        name: 'WebQa',
+        component: WebQaView,
       },
       {
         path: 'operation-logs', // 定义操作日志路径。
