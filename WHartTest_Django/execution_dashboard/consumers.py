@@ -12,6 +12,10 @@ from urllib.parse import parse_qs
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import AccessToken
 
 from projects.models import ProjectMember
 
@@ -33,6 +37,11 @@ class ExecutionDashboardConsumer(AsyncWebsocketConsumer):
             return
 
         user = self.scope.get("user")
+        if not user or not user.is_authenticated:
+            # 前端为 JWT 认证（无 session cookie），从查询参数 token 解析用户
+            token = self._parse_token()
+            user = await self._resolve_user(token) if token else None
+
         if not user or not user.is_authenticated:
             logger.warning("exec_dashboard: 未认证连接 (project=%s)", self.project_id)
             await self.close(code=4401)
@@ -86,6 +95,27 @@ class ExecutionDashboardConsumer(AsyncWebsocketConsumer):
         if not raw or not raw.isdigit():
             return None
         return int(raw)
+
+    def _parse_token(self):
+        query_string = self.scope.get("query_string", b"").decode("utf-8")
+        if not query_string:
+            return None
+        params = parse_qs(query_string)
+        return params.get("token", [None])[0]
+
+    @database_sync_to_async
+    def _resolve_user(self, token):
+        """通过 simplejwt AccessToken 解析用户（前端 JWT 认证场景）。"""
+        try:
+            access = AccessToken(token)
+            if access.payload.get("token_type") != "access":
+                return None
+            user_id = access.payload.get("user_id")
+            if user_id is None:
+                return None
+            return get_user_model().objects.get(pk=user_id, is_active=True)
+        except (TokenError, ObjectDoesNotExist, ValueError):
+            return None
 
     @database_sync_to_async
     def _is_project_member(self, user, project_id):

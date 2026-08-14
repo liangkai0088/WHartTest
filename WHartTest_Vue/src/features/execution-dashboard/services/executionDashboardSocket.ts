@@ -31,6 +31,11 @@ class ExecutionDashboardSocket {
     const host = import.meta.env.VITE_WS_HOST || window.location.host
     const url = new URL(`${protocol}//${host}/ws/execution/dashboard/`)
     url.searchParams.set('project_id', String(projectId))
+    // JWT 认证：浏览器 WebSocket 无法携带 Authorization 头，通过查询参数传递
+    const token = localStorage.getItem('auth-accessToken')
+    if (token) {
+      url.searchParams.set('token', token)
+    }
     return url.toString()
   }
 
