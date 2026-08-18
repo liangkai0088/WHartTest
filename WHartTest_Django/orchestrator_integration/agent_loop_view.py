@@ -1052,6 +1052,24 @@ class AgentLoopStreamAPIView(View):
                 supports_vision=active_config.supports_vision,
                 uploaded_images_base64=uploaded_images_base64,
             )
+            if test_case_id:
+                test_execution_tool_hint = (
+                    "\n\n# 测试执行运行时工具要求\n"
+                    + "当前请求是 WHartTest 测试用例执行，已注入 read_skill_content 和 execute_skill_script 工具。"
+                    + "如果系统提示词要求 browser_navigate、browser_snapshot、browser_take_screenshot 等 browser_* 工具，"
+                    + "但这些工具不在本轮可用工具列表中，不要判定 UI 自动化执行器离线，也不要要求先同步到 UI 自动化模块。"
+                    + "必须改用已绑定/已激活的浏览器 Skill 执行：优先调用 read_skill_content('playwright-skill') 获取说明，"
+                    + "再调用 execute_skill_script(skill_name='playwright-skill', command=..., session_id=同一个稳定会话ID) 执行浏览器操作和截图。"
+                    + "如果 playwright-skill 不存在，再根据 read_skill_content 返回的可用 Skills 列表选择 agent-browser-skill 或 playwright-cli。"
+                    + "只有当 read_skill_content/execute_skill_script 明确返回所有浏览器 Skill 都不存在或执行失败时，才把该步骤记录为失败。"
+                    + "执行完成后仍必须按测试执行提示词要求输出 JSON 测试结果。"
+                )
+                if isinstance(human_message_content, list) and human_message_content:
+                    first_part = human_message_content[0]
+                    if isinstance(first_part, dict) and first_part.get("type") == "text":
+                        first_part["text"] = first_part.get("text", "") + test_execution_tool_hint
+                elif isinstance(human_message_content, str):
+                    human_message_content += test_execution_tool_hint
             user_msg = HumanMessage(
                 content=human_message_content,
                 additional_kwargs=human_message_kwargs,

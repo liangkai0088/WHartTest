@@ -327,26 +327,29 @@ const startAutomationTask = (
   );
 };
 
-const fetchAllModulesForForm = async () => {
+const fetchAllModulesForForm = async (): Promise<boolean> => {
   if (!currentProjectId.value) {
     allModules.value = [];
     moduleTreeForForm.value = [];
-    return;
+    return false;
   }
   try {
     const response = await getTestCaseModules(currentProjectId.value, {}); // 获取所有模块
     if (response.success && response.data) {
       allModules.value = response.data;
       moduleTreeForForm.value = buildModuleTree(response.data);
+      return true;
     } else {
       allModules.value = [];
       moduleTreeForForm.value = [];
       Message.error(response.error || taskText.value.loadModulesFailed);
+      return false;
     }
   } catch (error) {
     Message.error(taskText.value.loadModulesError);
     allModules.value = [];
     moduleTreeForForm.value = [];
+    return false;
   }
 };
 
@@ -485,7 +488,9 @@ const handleViewDetailTestCaseDeleted = () => {
     modulePanelRef.value?.refreshModules();
 };
 
-const showGenerateCasesModal = () => {
+const showGenerateCasesModal = async () => {
+  const loaded = await fetchAllModulesForForm();
+  if (!loaded) return;
   isGenerateCasesModalVisible.value = true;
 };
 

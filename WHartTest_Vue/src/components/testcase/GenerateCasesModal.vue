@@ -569,9 +569,11 @@ const handleOk = () => {
 
   const selectedReqModules = requirementModules.value.filter(m => formState.requirementModuleIds.includes(m.id));
   const selectedTestCases = testCaseData.value.filter(tc => selectedTestCaseIds.value.includes(tc.id));
+  const testCaseModuleId = Number(formState.testCaseModuleId);
 
   emit('submit', {
     ...formState,
+    testCaseModuleId,
     selectedModules: selectedReqModules,
     selectedTestCaseIds: selectedTestCaseIds.value,
     selectedTestCases: selectedTestCases,

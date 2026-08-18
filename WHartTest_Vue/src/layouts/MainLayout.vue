@@ -73,37 +73,6 @@
           <icon-sun-fill v-if="themeStore.isBlack" class="theme-switch-icon" />
           <icon-moon-fill v-else class="theme-switch-icon" />
         </button>
-        <!-- 版本号显示 -->
-        <a-popover v-if="hasUpdate" position="bottom" trigger="hover" content-class="version-popover">
-          <a 
-            class="version-badge update-available" 
-            :href="versionInfo?.releaseUrl || 'https://github.com/mgdaaslab/AgentQA/releases'"
-            target="_blank"
-          >
-            {{ tl('当前版本:') }} {{ currentVersion }}
-            <span class="update-dot"></span>
-          </a>
-          <template #content>
-            <div class="version-update-info">
-              <div class="version-update-header">
-                <span class="update-title">🎉 {{ tl('新版本可用') }}</span>
-                <span class="update-version">v{{ versionInfo?.latest }}</span>
-              </div>
-              <div class="version-update-notes" v-if="releaseNotesPreview">
-                {{ releaseNotesPreview }}
-              </div>
-              <a 
-                class="version-update-footer"
-                :href="versionInfo?.releaseUrl || 'https://github.com/mgdaaslab/AgentQA/releases'"
-                target="_blank"
-              >
-                {{ tl('点击查看完整更新日志') }}
-              </a>
-            </div>
-          </template>
-        </a-popover>
-        <span v-else class="version-badge">{{ tl('当前版本:') }} {{ currentVersion }}</span>
-        
         <a-avatar class="avatar">
           <span>{{ userInitial }}</span>
         </a-avatar>
@@ -176,17 +145,17 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/task-center')">{{ tasksMenuLabel }}</a>
           </a-menu-item>
 
-          <a-menu-item key="execution-dashboard">
+          <a-menu-item key="execution-dashboard" v-if="false">
             <template #icon><icon-dashboard /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/dashboard/execution')">{{ executionDashboardMenuLabel }}</a>
           </a-menu-item>
 
-          <a-menu-item key="code-analysis">
+          <a-menu-item key="code-analysis" v-if="false">
             <template #icon><icon-code-square /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/code-analysis')">{{ codeAnalysisMenuLabel }}</a>
           </a-menu-item>
 
-          <a-menu-item key="web-qa">
+          <a-menu-item key="web-qa" v-if="false">
             <template #icon><icon-robot /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/web-qa')">{{ webQaMenuLabel }}</a>
           </a-menu-item>
@@ -308,12 +277,6 @@ import { brandLogoUrl, getPublicAssetUrl } from '@/utils/assetUrl';
 const brandBadgeUrl = getPublicAssetUrl('TZSZ.svg');
 import AppLocaleToggle from '@/components/AppLocaleToggle.vue';
 import {
-  getCurrentVersion,
-  formatVersion,
-  checkLatestVersion,
-  type VersionInfo
-} from '@/services/versionService';
-import {
   Layout as ALayout,
   Menu as AMenu,
   Avatar as AAvatar,
@@ -321,7 +284,6 @@ import {
   Doption as ADoption,
   SubMenu as ASubMenu,
   Select as ASelect,
-  Popover as APopover,
   Radio as ARadio,
   RadioGroup as ARadioGroup,
   Message
@@ -380,10 +342,6 @@ const headerSelectTriggerProps = {
   contentClass: 'layout-header-select-dropdown',
 };
 
-// 版本信息
-const currentVersion = ref(formatVersion(getCurrentVersion()));
-const versionInfo = ref<VersionInfo | null>(null);
-const hasUpdate = computed(() => versionInfo.value?.hasUpdate ?? false);
 const dashboardMenuLabel = computed(() => (locale.value === 'en-US' ? 'Home' : tl('首页')));
 const projectsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Projects' : tl('项目管理')));
 const requirementsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Requirements' : tl('需求管理')));
@@ -409,28 +367,6 @@ const skillsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Skills' : tl
 const executionDashboardMenuLabel = computed(() => (locale.value === 'en-US' ? 'Exec Board' : tl('执行看板')));
 const codeAnalysisMenuLabel = computed(() => (locale.value === 'en-US' ? 'AI Code Analysis' : tl('AI 源码分析')));
 const webQaMenuLabel = computed(() => (locale.value === 'en-US' ? 'Web QA' : tl('Web QA')));
-
-// 更新说明预览（显示完整内容）
-const releaseNotesPreview = computed(() => {
-  const notes = versionInfo.value?.releaseNotes;
-  if (!notes) return '';
-  // 移除 Markdown 标题符号，提取纯文本
-  return notes
-    .replace(/^#+\s*/gm, '')  // 移除标题 #
-    .replace(/\r\n/g, '\n')    // 统一换行符
-    .replace(/\*\*/g, '')      // 移除粗体
-    .replace(/`[^`]+`/g, '')   // 移除代码
-    .trim();
-});
-
-// 检查版本更新
-async function checkVersion() {
-  try {
-    versionInfo.value = await checkLatestVersion();
-  } catch (error) {
-    console.warn('版本检查失败:', error);
-  }
-}
 
 // 用户信息
 const user = computed(() => authStore.currentUser);
@@ -730,15 +666,8 @@ watch(showEnvironmentSelector, (show) => {
 
 // 在组件挂载时检查认证状态并加载项目列表
 onMounted(async () => {
-  // 确保用户信息在组件挂载时被正确加载
   authStore.checkAuthStatus();
-  console.log('MainLayout mounted, user:', user.value?.username);
-
-  // 加载项目列表
   await projectStore.fetchProjects();
-  
-  // 检查版本更新（后台执行，不阻塞页面）
-  checkVersion();
 });
 </script>
 
@@ -912,113 +841,6 @@ onMounted(async () => {
   line-height: 1;
 }
 
-/* 版本号样式 */
-.version-badge {
-  font-size: 13px;
-  color: #86909c;
-  background: #f2f3f5;
-  padding: 2px 8px;
-  border-radius: 10px;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  line-height: 1.5;
-}
-
-.version-badge.update-available {
-  color: #00b42a;
-  background: #e8ffea;
-  cursor: pointer;
-}
-
-.version-badge.update-available:hover {
-  background: #d4f7d4;
-}
-
-.update-dot {
-  width: 5px;
-  height: 5px;
-  background: #00b42a;
-  border-radius: 50%;
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-  100% {
-    opacity: 1;
-  }
-}
-
-/* 版本更新弹出框样式 */
-.version-update-info {
-  max-width: 320px;
-  padding: 4px;
-}
-
-.version-update-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #e5e6eb;
-}
-
-.update-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1d2129;
-}
-
-.update-version {
-  font-size: 13px;
-  color: #00b42a;
-  font-weight: 500;
-  background: #e8ffea;
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-
-.version-update-notes {
-  font-size: 12px;
-  color: #4e5969;
-  line-height: 1.6;
-  max-height: 400px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none; /* IE/Edge */
-}
-
-.version-update-notes::-webkit-scrollbar {
-  display: none; /* Chrome/Safari/Opera */
-}
-
-.version-update-footer {
-  display: block;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #e5e6eb;
-  font-size: 12px;
-  color: #165dff;
-  text-align: center;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.version-update-footer:hover {
-  color: #0e42d2;
-  text-decoration: underline;
-}
-
 .avatar {
   margin-right: 8px;
 }
@@ -1082,7 +904,10 @@ onMounted(async () => {
   margin: 5px 5px 10px 10px;
   border-radius: 8px;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
-  height: auto; /* 让 flex 自动撑开 */
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
 
 .menu {
@@ -1093,7 +918,9 @@ onMounted(async () => {
   overflow-y: auto;
   overflow-x: hidden;
   text-align: left;
-  max-height: calc(100% - 50px);
+  flex: 1;
+  max-height: calc(100% - 70px);
+  padding-bottom: 10px;
 }
 
 :deep(.arco-menu-light) {

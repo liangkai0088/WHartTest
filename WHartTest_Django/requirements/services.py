@@ -3293,8 +3293,21 @@ class RequirementReviewEngine:
                 elif isinstance(recs, str):
                     recommendations.append(recs)
 
-            # 去重
-            recommendations = list(set(recommendations))[:10]
+            deduplicated_recommendations = []
+            seen_recommendations = set()
+            for recommendation in recommendations:
+                if isinstance(recommendation, dict):
+                    recommendation_text = json.dumps(
+                        recommendation, ensure_ascii=False, sort_keys=True
+                    )
+                else:
+                    recommendation_text = str(recommendation)
+
+                if recommendation_text not in seen_recommendations:
+                    seen_recommendations.add(recommendation_text)
+                    deduplicated_recommendations.append(recommendation)
+
+            recommendations = deduplicated_recommendations[:10]
 
             # 生成总结
             summary = self._generate_summary(
