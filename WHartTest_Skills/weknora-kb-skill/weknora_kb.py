@@ -81,7 +81,8 @@ ACTIONS = {
     "list_knowledge_bases": lambda args: list_knowledge_bases(),
     "search_knowledge": lambda args: search_knowledge(
         args.query,
-        [x.strip() for x in args.knowledge_base_ids.split(",")],
+        [x.strip() for x in args.knowledge_base_ids.split(",")]
+        if args.knowledge_base_ids else [],
         [x.strip() for x in args.knowledge_ids.split(",")] if args.knowledge_ids else None,
     ),
 }
@@ -95,6 +96,11 @@ def main():
     parser.add_argument("--knowledge_ids", help="文档ID列表(逗号分隔，可选)")
 
     args = parser.parse_args()
+    if args.action == "search_knowledge":
+        if not args.query:
+            parser.error("search_knowledge requires --query")
+        if not args.knowledge_base_ids:
+            parser.error("search_knowledge requires --knowledge_base_ids")
     result = ACTIONS[args.action](args)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

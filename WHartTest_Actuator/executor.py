@@ -50,12 +50,12 @@ class StepConfig:
     upload_project_id: Optional[int] = None
     upload_file_sha: Optional[str] = None
     upload_file_size: Optional[int] = None
-    
+
     # step details (shared steps)
     details: list['StepConfig'] = field(default_factory=list)
 
 
-@dataclass 
+@dataclass
 class PageStepConfig:
     """页面步骤配置"""
     page_step_id: int
@@ -76,9 +76,9 @@ class TestCaseConfig:
 
 class PlaywrightExecutor:
     """Python原生Playwright执行器"""
-    
+
     def __init__(
-        self, 
+        self,
         browser_type: str = 'chromium',
         headless: bool = False,
         persistent: bool = True,
@@ -99,14 +99,14 @@ class PlaywrightExecutor:
         self.launch_timeout = launch_timeout
         self.action_timeout = action_timeout
         self.screenshot_dir = screenshot_dir
-        
+
         # Trace 配置
         self.trace_enabled = trace_enabled
         self.trace_dir = trace_dir
         self.trace_screenshots = trace_screenshots
         self.trace_snapshots = trace_snapshots
         self.trace_sources = trace_sources
-        
+
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -114,12 +114,12 @@ class PlaywrightExecutor:
         self._stop_requested = False
         self._current_trace_path: Optional[str] = None
         self._page_errors: list[str] = []
-        
+
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
         if self.trace_enabled:
             Path(self.trace_dir).mkdir(parents=True, exist_ok=True)
-    
+
     async def init_browser(self) -> None:
         """初始化浏览器"""
         # 若上次未正常关闭，先释放，避免叠加启动多个 Chromium
@@ -128,9 +128,9 @@ class PlaywrightExecutor:
 
         if self._playwright is None:
             self._playwright = await async_playwright().start()
-        
+
         browser_launcher = getattr(self._playwright, self.browser_type)
-        
+
         if self.persistent:
             self._context = await browser_launcher.launch_persistent_context(
                 self.user_data_dir,
@@ -146,10 +146,10 @@ class PlaywrightExecutor:
             )
             self._context = await self._browser.new_context()
             self._page = await self._context.new_page()
-        
+
         self._page.set_default_timeout(self.action_timeout)
         logger.info(f"浏览器已初始化: {self.browser_type}, headless={self.headless}")
-    
+
     def _release_memory(self) -> None:
         """主动回收 Python 对象，并尽量将内存归还操作系统。"""
         try:
@@ -277,23 +277,23 @@ class PlaywrightExecutor:
             yield self._page
         finally:
             await self.close()
-    
+
     @asynccontextmanager
     async def browser_session_with_trace(self, trace_name: str = 'trace'):
         """带 Trace 的浏览器会话上下文管理器
-        
+
         Args:
             trace_name: trace 文件名前缀（不含扩展名）
-            
+
         Yields:
             Page: 页面对象
-            
+
         Returns:
             trace 文件路径（通过 self._current_trace_path 获取）
         """
         await self.init_browser()
         self._current_trace_path = None
-        
+
         try:
             # 启动 Trace
             if self.trace_enabled and self._context:
@@ -303,9 +303,9 @@ class PlaywrightExecutor:
                     sources=self.trace_sources,
                 )
                 logger.debug(f"Trace 已启动: screenshots={self.trace_screenshots}, snapshots={self.trace_snapshots}")
-            
+
             yield self._page
-            
+
         finally:
             # 停止 Trace 并保存
             if self.trace_enabled and self._context:
@@ -317,9 +317,9 @@ class PlaywrightExecutor:
                     logger.info(f"Trace 已保存: {trace_path}")
                 except Exception as e:
                     logger.error(f"保存 Trace 失败: {e}")
-            
+
             await self.close()
-    
+
     def get_current_trace_path(self) -> Optional[str]:
         """获取当前执行的 trace 文件路径"""
         return self._current_trace_path
@@ -624,7 +624,7 @@ class PlaywrightExecutor:
         file_chooser = await file_chooser_info.value
         await file_chooser.set_files(file_path)
         logger.info(f"步骤 {step.step_id}: 已通过 file chooser 设置上传文件")
-    
+
     async def _execute_step(
         self,
         page: Page,
@@ -632,7 +632,7 @@ class PlaywrightExecutor:
         env_config: Optional[dict] = None,
     ) -> tuple[bool, str, str | None]:
         """执行单个步骤
-        
+
         Returns:
             tuple: (成功与否, 消息, 截图路径(可选))
         """
@@ -642,28 +642,28 @@ class PlaywrightExecutor:
 
         operation = (step.operation_type or '').lower()
         screenshot_path: str | None = None
-        
+
         # 等待时间（仅当用户明确设置 > 0 时才等待，用于特殊场景）
         # 注意：Playwright 自带 Auto-waiting，一般不需要手动等待
         if step.wait_time > 0:
             logger.debug(f"步骤 {step.step_id}: 强制等待 {step.wait_time}s（建议设为0让Playwright自动等待）")
             await page.wait_for_timeout(int(step.wait_time * 1000))
-        
+
         # 记录开始时间
         op_start = time.time()
-        
+
         # switch_tab 操作特殊处理
         if operation == 'switch_tab':
             if not page.context:
                 return False, "浏览器上下文为空，无法切换页签", None
-            
+
             pages = page.context.pages
             target_idx = None
             try:
                 target_idx = int(step.input_value)
             except (ValueError, TypeError):
                 pass
-            
+
             if target_idx is not None:
                 if 0 <= target_idx < len(pages):
                     self._page = pages[target_idx]
@@ -675,7 +675,7 @@ class PlaywrightExecutor:
                 query = step.input_value.strip() if step.input_value else ''
                 if not query:
                     return False, "切换页签参数为空，请输入索引、URL或页签标题", None
-                
+
                 for p in pages:
                     try:
                         title = await p.title()
@@ -693,7 +693,7 @@ class PlaywrightExecutor:
             await page.screenshot(path=screenshot_path)
             logger.debug(f"步骤 {step.step_id}: screenshot 耗时 {time.time() - op_start:.2f}s")
             return True, f"页面操作 {operation} 执行成功", screenshot_path
-        
+
         # 页面操作（不需要定位器）
         def _parse_wait_timeout(value: str) -> int:
             """解析等待时间（毫秒）"""
@@ -713,16 +713,16 @@ class PlaywrightExecutor:
             'wait_load': lambda: page.wait_for_load_state("load"),
             'wait_network': lambda: page.wait_for_load_state("networkidle"),
         }
-        
+
         if operation in page_operations:
             await page_operations[operation]()
             logger.debug(f"步骤 {step.step_id}: {operation} 耗时 {time.time() - op_start:.2f}s")
             return True, f"页面操作 {operation} 执行成功", None
-        
+
         # 元素操作（需要定位器）- 先验证定位器是否有效
         if not step.locator_value or not step.locator_value.strip():
             return False, f"元素定位器为空，请在元素管理中配置定位表达式（步骤: {step.description or step.step_id}）", None
-        
+
         locator_start = time.time()
         target = page
         if step.is_iframe and step.iframe_locator:
@@ -782,7 +782,7 @@ class PlaywrightExecutor:
             f"步骤 {step.step_id}: 定位元素 [{locator_type_used}={locator_value_used}] "
             f"耗时 {locator_time:.2f}s (iframe={step.is_iframe})"
         )
-        
+
         element_operations = {
             'click': lambda: locator.click(),
             'dblclick': lambda: locator.dblclick(),
@@ -796,7 +796,7 @@ class PlaywrightExecutor:
             'focus': lambda: locator.focus(),
             'press': lambda: locator.press(step.input_value),
         }
-        
+
         if operation == 'upload':
             action_start = time.time()
             await self._upload_file(page, locator, step.input_value, step)
@@ -810,7 +810,7 @@ class PlaywrightExecutor:
             action_time = time.time() - action_start
             logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
             return True, f"元素操作 {operation} 执行成功", None
-        
+
         # 断言操作
         if operation.startswith('assert_'):
             assert_type = operation.replace('assert_', '')
@@ -830,21 +830,21 @@ class PlaywrightExecutor:
                 await assert_operations[assert_type]()
                 logger.debug(f"步骤 {step.step_id}: assert_{assert_type} 耗时 {time.time() - op_start:.2f}s")
                 return True, f"断言 {assert_type} 通过", None
-        
+
         return False, f"未知操作类型: {operation}", None
-    
+
     async def execute_step(self, step: StepConfig, page_url: str = '') -> StepResultModel:
         """执行单个步骤（独立浏览器会话）"""
         start_time = time.time()
-        
+
         try:
             async with self.browser_session() as page:
                 if page_url:
                     await page.goto(page_url)
-                
+
                 success, message, step_screenshot = await self._execute_step(page, step)
                 duration = time.time() - start_time
-                
+
                 return StepResultModel(
                     step_id=step.step_id,
                     status='success' if success else 'failed',
@@ -865,7 +865,7 @@ class PlaywrightExecutor:
                 duration=duration,
                 element_found=False
             )
-    
+
     async def execute_test_case(self, config: TestCaseConfig) -> CaseResultModel:
         """执行测试用例（支持 Trace 记录）"""
         start_time = time.time()
@@ -873,10 +873,10 @@ class PlaywrightExecutor:
         passed_steps = 0
         failed_steps = 0
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
-        
+
         self._stop_requested = False
         trace_name = f"case_{config.case_id}"
-        
+
         try:
             # 使用带 trace 的浏览器会话
             async with self.browser_session_with_trace(trace_name) as page:
@@ -906,7 +906,7 @@ class PlaywrightExecutor:
                     if page_step.page_url:
                         current_url = page.url
                         expected_url = page_step.page_url.rstrip('/')
-                        
+
                         # 只有当期望的 URL 与当前 URL 不同时，才等待跳转
                         if expected_url not in current_url:
                             try:
@@ -919,15 +919,15 @@ class PlaywrightExecutor:
                             except Exception:
                                 # 没有页面跳转是正常情况
                                 pass
-                    
+
                     # 执行页面内的步骤
                     for step in page_step.steps:
                         if self._stop_requested:
                             raise Exception("用例被手动停止")
-                        
+
                         # 确保总是使用最新的活跃页签进行操作
                         page = self._page
-                        
+
                         step_start = time.time()
                         try:
                             success, message, step_screenshot = await self._execute_step(
@@ -935,7 +935,7 @@ class PlaywrightExecutor:
                                 step,
                                 page_step.env_config or config.env_config,
                             )
-                            
+
                             # 执行后重新同步页签引用，以防步骤内发生了页签切换
                             page = self._page
                             step_duration = time.time() - step_start
@@ -984,7 +984,7 @@ class PlaywrightExecutor:
                                 element_found=False,
                                 screenshot=screenshot_path
                             )
-                        
+
                         step_results.append(step_result)
 
                     # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
@@ -1000,15 +1000,15 @@ class PlaywrightExecutor:
                 if self._page_errors:
                     message += f" (捕获 {len(self._page_errors)} 个页面 JS 错误: {'; '.join(self._page_errors[:3])})"
                 logger.info(f"✅ {message}" if status == 'success' else f"❌ {message}")
-                
+
                 # 获取 trace 文件路径（会在 browser_session_with_trace 结束时设置）
                 trace_path = None
-            
+
             # 会话结束后获取 trace 路径
             trace_path = self.get_current_trace_path()
             if trace_path:
                 logger.info(f"用例执行 Trace 已记录: {trace_path}")
-            
+
             return CaseResultModel(
                 case_id=config.case_id,
                 status=status,
@@ -1020,15 +1020,15 @@ class PlaywrightExecutor:
                 steps=step_results,
                 trace_path=trace_path
             )
-                
+
         except Exception as e:
             duration = time.time() - start_time
             error_msg = str(e)
             logger.error(f"用例执行异常: {error_msg}\n{traceback.format_exc()}")
-            
+
             # 尝试获取 trace 路径（可能已保存）
             trace_path = self.get_current_trace_path()
-            
+
             return CaseResultModel(
                 case_id=config.case_id,
                 status='failed',
@@ -1044,20 +1044,20 @@ class PlaywrightExecutor:
     async def execute_page_step(self, config: PageStepConfig) -> list[StepResultModel]:
         """执行单个页面步骤（包含多个操作）- 使用同一个浏览器会话"""
         step_results = []
-        
+
         try:
             async with self.browser_session() as page:
                 logger.info(f"开始执行页面步骤: {config.page_name}")
                 self._page_errors = []
                 self._setup_page_listeners(page)
-                
+
                 # 导航到页面
                 if config.page_url:
                     nav_start = time.time()
                     await page.goto(config.page_url)
                     await page.wait_for_load_state("domcontentloaded")
                     logger.debug(f"页面导航 {config.page_name} 耗时 {time.time() - nav_start:.2f}s")
-                
+
                 # 执行页面内的所有步骤
                 for step in config.steps:
                     step_start = time.time()
@@ -1114,7 +1114,7 @@ class PlaywrightExecutor:
                         )
                         step_results.append(step_result)
                         break  # 步骤失败时停止执行后续步骤
-                        
+
         except Exception as e:
             logger.error(f"页面步骤执行异常: {e}\n{traceback.format_exc()}")
             # 如果连浏览器都打不开，返回一个失败结果
@@ -1224,6 +1224,8 @@ class PlaywrightExecutor:
                                 screenshot_path = f"{self.screenshot_dir}/fail_{config.case_id}_{step.step_id}.png"
                                 await page.screenshot(path=screenshot_path)
                                 step_result.screenshot = screenshot_path
+                            step_results.append(step_result)
+                            break
 
                     except Exception as step_error:
                         step_duration = time.time() - step_start
@@ -1245,8 +1247,11 @@ class PlaywrightExecutor:
                             element_found=False,
                             screenshot=screenshot_path
                         )
+                        step_results.append(step_result)
+                        break
 
-                    step_results.append(step_result)
+                    if success:
+                        step_results.append(step_result)
 
                 # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
                 try:

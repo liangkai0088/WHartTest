@@ -15,7 +15,7 @@ from typing import Optional, Any
 import httpx
 
 from models import (
-    SocketDataModel, QueueModel, UiSocketEnum, 
+    SocketDataModel, QueueModel, UiSocketEnum,
     StepResultModel, CaseResultModel, ResponseCode, NoticeType
 )
 from websocket_client import WebSocketClient
@@ -30,8 +30,8 @@ logger = logging.getLogger('actuator')
 
 class TaskConsumer:
     """任务消费者 - 处理从服务器接收的执行任务"""
-    
-    def __init__(self, ws_client: WebSocketClient, api_base_url: str, 
+
+    def __init__(self, ws_client: WebSocketClient | None, api_base_url: str,
                  config: Any = None,
                  api_username: str = 'admin', api_password: str = 'admin123'):
         self.ws_client = ws_client
@@ -40,7 +40,7 @@ class TaskConsumer:
         self.api_password = api_password
         self._api_token: Optional[str] = None
         self.config = config
-        
+
         # 从配置创建执行器
         executor_config = {}
         if config:
@@ -104,12 +104,12 @@ class TaskConsumer:
 
         if cleaned_count > 0:
             logger.info(f"已清理 {cleaned_count} 个超过 {max_age_days} 天的过期文件")
-    
+
     async def _get_api_token(self) -> Optional[str]:
         """获取API认证token"""
         if self._api_token:
             return self._api_token
-        
+
         url = f"{self.api_base_url}/api/token/"
         try:
             async with httpx.AsyncClient() as client:
@@ -131,13 +131,13 @@ class TaskConsumer:
         except Exception as e:
             logger.error(f"获取Token请求失败: {e}")
             return None
-    
+
     async def _api_get(self, path: str) -> Optional[dict]:
         """带认证的API GET请求"""
         token = await self._get_api_token()
         if not token:
             return None
-        
+
         url = f"{self.api_base_url}{path}"
         try:
             async with httpx.AsyncClient() as client:
@@ -158,20 +158,20 @@ class TaskConsumer:
         except Exception as e:
             logger.error(f"API请求异常: {e}")
             return None
-    
+
     async def _encode_screenshot_base64(self, file_path: str) -> Optional[str]:
         """将截图文件编码为 Base64 数据 URL"""
         import os
         import base64
-        
+
         # 处理相对路径
         if file_path.startswith('./'):
             file_path = os.path.abspath(file_path)
-        
+
         if not file_path or not os.path.exists(file_path):
             logger.warning(f"截图文件不存在: {file_path}")
             return None
-        
+
         try:
             with open(file_path, 'rb') as f:
                 data = base64.b64encode(f.read()).decode('utf-8')
@@ -180,7 +180,7 @@ class TaskConsumer:
         except Exception as e:
             logger.warning(f"截图编码失败: {e}")
             return None
-    
+
     async def _process_result_screenshots(self, result: CaseResultModel) -> CaseResultModel:
         """处理结果中的截图，转为 Base64 数据 URL，并清理本地文件"""
         import os
@@ -201,7 +201,7 @@ class TaskConsumer:
                 else:
                     step.screenshot = None
         return result
-    
+
     async def _upload_trace_file(self, trace_path: str) -> Optional[str]:
         """上传 Trace 文件到服务器，成功后清理本地文件
 
@@ -295,22 +295,22 @@ class TaskConsumer:
         if socket_data.code != ResponseCode.SUCCESS:
             logger.warning(f"收到错误消息: {socket_data.msg}")
             return
-        
+
         if not socket_data.data:
             logger.debug(f"收到通知消息: {socket_data.msg}")
             return
-        
+
         # 记录发起用户
         self._current_user = socket_data.user
-        
+
         # 添加到任务队列
         await self.add_task(socket_data.data)
-    
+
     async def add_task(self, task: QueueModel):
         """添加任务到队列"""
         await self.task_queue.put(task)
         logger.info(f"任务已入队: {task.func_name}")
-    
+
     async def process_tasks(self):
         """处理任务队列"""
         while not self._stop_event.is_set():
@@ -320,16 +320,16 @@ class TaskConsumer:
                     self.task_queue.get(),
                     timeout=1.0
                 )
-                
+
                 # 路由任务到对应处理器
                 await self._route_task(task)
                 self.task_queue.task_done()
-                
+
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
                 logger.error(f"处理任务错误: {e}", exc_info=True)
-    
+
     async def _route_task(self, task: QueueModel):
         """路由任务到对应处理器"""
         handlers = {
@@ -338,31 +338,31 @@ class TaskConsumer:
             UiSocketEnum.TEST_CASE_BATCH: self.execute_batch,
             UiSocketEnum.STOP_EXECUTION: self.stop_execution,
         }
-        
+
         handler = handlers.get(task.func_name)
         if handler:
             await handler(task.func_args)
         else:
             logger.warning(f"未知任务类型: {task.func_name}")
-    
+
     async def execute_page_steps(self, args: dict):
         """执行页面步骤"""
         page_step_id = args.get('page_step_id')
         env_config_id = args.get('env_config_id')
-        
+
         if not page_step_id:
             logger.error("缺少page_step_id参数")
             return
-        
+
         # 从API获取页面步骤详情
         page_step_data = await self._fetch_page_step(page_step_id)
         if not page_step_data:
             return
-        
+
         # 初始化数据处理器，加载项目公共变量
         project_id = page_step_data.get('project')
         data_processor = await self._init_data_processor(project_id)
-        
+
         # 获取环境配置
         env_config = None
         base_url = ''
@@ -372,17 +372,17 @@ class TaskConsumer:
             # 尝试获取项目的默认环境配置
             if project_id:
                 env_config = await self._fetch_default_env_config(project_id)
-        
+
         if env_config:
             base_url = env_config.get('base_url', '') or ''
             logger.info(f"使用环境配置: {env_config.get('name')}, base_url: {base_url}")
-        
+
         # 构建配置，传入 base_url 和数据处理器
         config = self._build_page_step_config(page_step_data, base_url, data_processor, env_config)
-        
+
         # 执行（使用同一浏览器会话）
         logger.info(f"开始执行页面步骤: {config.page_name}")
-        
+
         step_results = None
         summary_result = None
         try:
@@ -408,11 +408,11 @@ class TaskConsumer:
                 )
                 return
             step_results = await self.executor.execute_page_step(config)
-            
+
             # 统计结果
             passed_steps = sum(1 for r in step_results if r.status == 'success')
             failed_steps = len(step_results) - passed_steps
-            
+
             # 处理截图为 Base64 并发送步骤结果
             import os
             for result in step_results:
@@ -436,7 +436,7 @@ class TaskConsumer:
                     result.model_dump(),
                     self._current_user
                 )
-            
+
             # 发送页面步骤执行汇总结果
             summary_result = {
                 'page_step_id': page_step_id,
@@ -448,7 +448,7 @@ class TaskConsumer:
                 'duration': time.time() - start_time,
                 'steps': [r.model_dump() for r in step_results],
             }
-            
+
             await self.ws_client.send_result(
                 'u_page_step_result',  # 新增的结果类型
                 summary_result,
@@ -461,7 +461,7 @@ class TaskConsumer:
                 self._release_result_payloads(steps=step_results)
             summary_result = None
             await self._release_memory_after_task()
-    
+
     async def execute_test_case(self, args: dict):
         """执行测试用例"""
         case_id = args.get('case_id')
@@ -469,7 +469,7 @@ class TaskConsumer:
         batch_id = args.get('batch_id')
         executor_id = args.get('executor_id')
         executor_name = args.get('executor_name')
-        
+
         if not case_id:
             logger.error("缺少case_id参数")
             return
@@ -545,7 +545,7 @@ class TaskConsumer:
                 result_data['executor_id'] = executor_id
             if executor_name:
                 result_data['executor_name'] = executor_name
-                
+
             await self.ws_client.send_result(
                 UiSocketEnum.CASE_RESULT,
                 result_data,
@@ -559,7 +559,7 @@ class TaskConsumer:
                 self._release_result_payloads(result)
             result_data = None
             await self._release_memory_after_task()
-    
+
     async def execute_batch(self, args: dict):
         """批量执行用例（支持并发）"""
         case_ids = args.get('case_ids', [])
@@ -665,7 +665,7 @@ class TaskConsumer:
             logger.info("批量执行完成")
         finally:
             await self._release_memory_after_task()
-    
+
     async def stop_execution(self, args: dict):
         """停止执行"""
         logger.info("收到停止执行请求")
@@ -677,7 +677,7 @@ class TaskConsumer:
                 self.task_queue.task_done()
             except asyncio.QueueEmpty:
                 break
-    
+
 
     def _upload_cache_dir(self) -> Path:
         raw = getattr(self.config, 'upload_cache_dir', './data/runtime_uploads') if self.config else './data/runtime_uploads'
@@ -1032,15 +1032,15 @@ class TaskConsumer:
     async def _fetch_page_step(self, page_step_id: int) -> Optional[dict]:
         """从API获取页面步骤详情（含元素定位信息，用于执行）"""
         return await self._api_get(f"/api/ui-automation/page-steps/{page_step_id}/execute-data/")
-    
+
     async def _fetch_test_case(self, case_id: int) -> Optional[dict]:
         """从API获取测试用例详情（含完整步骤详情）"""
         return await self._api_get(f"/api/ui-automation/testcases/{case_id}/execute-data/")
-    
+
     async def _fetch_env_config(self, env_config_id: int) -> Optional[dict]:
         """从API获取环境配置"""
         return await self._api_get(f"/api/ui-automation/env-configs/{env_config_id}/")
-    
+
     async def _fetch_default_env_config(self, project_id: int) -> Optional[dict]:
         """从API获取项目的默认环境配置"""
         result = await self._api_get(f"/api/ui-automation/env-configs/?project={project_id}&is_default=true")
@@ -1083,7 +1083,7 @@ class TaskConsumer:
     async def _init_data_processor(self, project_id: int) -> DataProcessor:
         """初始化数据处理器，加载项目公共变量"""
         data_processor = reset_data_processor()
-        
+
         if project_id:
             public_data = await self._fetch_public_data(project_id)
             logger.info(f"已加载 {len(public_data)} 个公共变量")
@@ -1092,7 +1092,7 @@ class TaskConsumer:
                 logger.debug(f"变量缓存: {data_processor.get_all()}")
         else:
             logger.warning("project_id 为空，无法加载公共变量")
-        
+
         return data_processor
 
     def _build_page_step_config(
@@ -1104,7 +1104,7 @@ class TaskConsumer:
         env_config: Optional[dict] = None,
     ) -> PageStepConfig:
         """构建页面步骤配置
-        
+
         Args:
             data: 页面步骤数据
             base_url: 环境基础URL
@@ -1113,16 +1113,16 @@ class TaskConsumer:
             env_config: 执行环境配置，用于 SQL 步骤获取数据库连接
         """
         steps = []
-        
+
         for detail in data.get('step_details', []):
             step_type = detail.get('step_type', 0)
             detail_id = str(detail.get('id', ''))
             operation_type = detail.get('ope_key') or ''
-            
+
             # 从 ope_value 中提取输入值
             ope_value = detail.get('ope_value', {})
             sql_execute = detail.get('sql_execute') or {}
-            
+
             # 应用用例步骤的覆盖数据
             if case_data_override and detail_id in case_data_override:
                 val = case_data_override[detail_id]
@@ -1148,7 +1148,7 @@ class TaskConsumer:
                                 ope_value = {'text': val}
                     else:
                         ope_value = val
-            
+
             # 支持多种格式：{"text": "admin"}, {"value": "xxx"}, {"timeout": 3000}, 或纯字符串/数字
             if isinstance(ope_value, dict):
                 # 按优先级尝试提取常见字段
@@ -1168,12 +1168,12 @@ class TaskConsumer:
                 input_value = str(input_value) if input_value else ''
             else:
                 input_value = str(ope_value) if ope_value else ''
-            
+
             # 定位器值也可能包含变量
             locator_value = detail.get('locator_value', '')
             locator_value_2 = detail.get('locator_value_2', '')
             locator_value_3 = detail.get('locator_value_3', '')
-            
+
             # 变量替换：替换 input_value 和 locator_value 中的 ${{变量名}}
             if data_processor:
                 sql_execute = data_processor.replace(sql_execute)
@@ -1184,7 +1184,7 @@ class TaskConsumer:
                 input_value = data_processor.replace(input_value)
                 if original_input != input_value:
                     logger.info(f"变量替换: '{original_input}' -> '{input_value}'")
-                
+
                 original_locator = locator_value
                 locator_value = data_processor.replace(locator_value)
                 if original_locator != locator_value:
@@ -1201,7 +1201,7 @@ class TaskConsumer:
                     locator_value_3 = data_processor.replace(locator_value_3)
                     if original_locator_3 != locator_value_3:
                         logger.info(f"变量替换 (定位器3): '{original_locator_3}' -> '{locator_value_3}'")
-                
+
                 # 确保替换后的值是字符串类型
                 if not isinstance(input_value, str):
                     input_value = str(input_value)
@@ -1213,7 +1213,7 @@ class TaskConsumer:
                     locator_value_3 = str(locator_value_3)
             else:
                 logger.warning(f"data_processor 为 None，跳过变量替换")
-            
+
             # iframe 定位器也可能包含变量
             is_iframe = detail.get('is_iframe', False)
             iframe_locator = detail.get('iframe_locator', '') or ''
@@ -1281,7 +1281,7 @@ class TaskConsumer:
                 upload_file_sha=(ope_value.get('sha256') or ope_value.get('file_sha') or None) if isinstance(ope_value, dict) else None,
                 upload_file_size=self._parse_file_id(ope_value.get('size')) if isinstance(ope_value, dict) else None,
             ))
-        
+
         # 页面URL处理：支持相对路径与 base_url 拼接
         page_url = data.get('page_url', '') or ''
         if page_url:
@@ -1294,13 +1294,13 @@ class TaskConsumer:
         else:
             # page_url 为空，使用 base_url
             page_url = base_url
-        
+
         # URL也可能包含变量
         if data_processor and page_url:
             page_url = data_processor.replace(page_url)
             if not isinstance(page_url, str):
                 page_url = str(page_url)
-        
+
         return PageStepConfig(
             page_step_id=data.get('id', 0),
             page_url=page_url,
@@ -1308,10 +1308,10 @@ class TaskConsumer:
             steps=steps,
             env_config=env_config,
         )
-    
+
     def _build_test_case_config(self, data: dict, env_config: Optional[dict] = None, data_processor: Optional[DataProcessor] = None) -> TestCaseConfig:
         """构建测试用例配置
-        
+
         Args:
             data: 用例数据
             env_config: 环境配置
@@ -1322,22 +1322,22 @@ class TaskConsumer:
         if env_config:
             base_url = env_config.get('base_url', '') or ''
             logger.info(f"使用环境配置: {env_config.get('name')}, base_url: {base_url}")
-        
+
         page_steps = []
-        
+
         for case_step in data.get('case_step_details', []):
             page_step_data = case_step.get('page_step', {})
             case_data_override = case_step.get('case_data') or {}
             if page_step_data:
                 page_steps.append(self._build_page_step_config(page_step_data, base_url, data_processor, case_data_override, env_config))
-        
+
         return TestCaseConfig(
             case_id=data.get('id', 0),
             case_name=data.get('name', ''),
             page_steps=page_steps,
             env_config=env_config,
         )
-    
+
     def stop(self):
         """停止消费者"""
         self._stop_event.set()
@@ -1357,13 +1357,13 @@ class TaskConsumer:
     async def run(self):
         """运行消费者"""
         self.ws_client.set_message_handler(self.handle_message)
-        
+
         # 启动任务处理协程
         process_task = asyncio.create_task(self.process_tasks())
-        
+
         # 启动WebSocket客户端
         await self.ws_client.run()
-        
+
         # 停止任务处理
         self.stop()
         await process_task

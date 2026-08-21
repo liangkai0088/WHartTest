@@ -2,6 +2,7 @@
 """UI 自动化视图"""
 
 from rest_framework import viewsets, status
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
@@ -918,7 +919,7 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
 
 class ActuatorViewSet(viewsets.ViewSet):
     """执行器管理视图"""
-    permission_classes = []  # 公开访问，不需要特殊权限
+    permission_classes = [IsAdminUser]
 
     @action(detail=False, methods=['get'])
     def list_actuators(self, request):
@@ -1004,7 +1005,8 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 
 
-from rest_framework.permissions import AllowAny
+SCREENSHOT_UPLOAD_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
+TRACE_UPLOAD_EXTENSIONS = {'.zip'}
 
 
 @api_view(['POST'])
@@ -1026,7 +1028,9 @@ def upload_screenshot(request):
     os.makedirs(upload_dir, exist_ok=True)
 
     # 生成唯一文件名
-    ext = os.path.splitext(file.name)[1] or '.png'
+    ext = (os.path.splitext(file.name)[1] or '.png').lower()
+    if ext not in SCREENSHOT_UPLOAD_EXTENSIONS:
+        return Response({'error': '仅支持 png、jpg、jpeg、webp 截图文件'}, status=status.HTTP_400_BAD_REQUEST)
     filename = f"{uuid.uuid4().hex[:12]}{ext}"
     file_path = os.path.join(upload_dir, filename)
 
@@ -1057,7 +1061,9 @@ def upload_trace(request):
     os.makedirs(upload_dir, exist_ok=True)
 
     # 生成唯一文件名
-    ext = os.path.splitext(file.name)[1] or '.zip'
+    ext = (os.path.splitext(file.name)[1] or '.zip').lower()
+    if ext not in TRACE_UPLOAD_EXTENSIONS:
+        return Response({'error': '仅支持 zip trace 文件'}, status=status.HTTP_400_BAD_REQUEST)
     filename = f"{uuid.uuid4().hex[:12]}{ext}"
     file_path = os.path.join(upload_dir, filename)
 

@@ -78,10 +78,6 @@ class RequirementDocumentViewSet(BaseModelViewSet):
 
     def get_permissions(self):
         """根据操作类型设置不同的权限"""
-        # 图片访问接口公开，无需认证
-        if self.action == "get_image":
-            return []
-
         # 获取基础权限（用户认证 + Django模型权限）
         base_permissions = super().get_permissions()
 
@@ -175,18 +171,16 @@ class RequirementDocumentViewSet(BaseModelViewSet):
         detail=True,
         methods=["get"],
         url_path="images/(?P<image_id>[^/.]+)",
-        authentication_classes=[],
-        permission_classes=[],
     )
     def get_image(self, request, pk=None, image_id=None):
         """
-        获取文档中的图片（公开访问，无需认证）
+        获取文档中的图片
         GET /api/requirements/documents/{id}/images/{image_id}/
         """
         from django.http import FileResponse
 
         try:
-            document = RequirementDocument.objects.get(pk=pk)
+            document = self.get_object()
             image = self._get_latest_document_image(document, image_id)
             if not image:
                 return Response({"error": "图片不存在"}, status=status.HTTP_404_NOT_FOUND)

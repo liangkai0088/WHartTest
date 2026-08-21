@@ -6,11 +6,11 @@ UI自动化执行器 - 主入口
     # 使用配置文件
     python main.py
     python main.py --config config.toml
-    
+
     # 使用命令行参数（覆盖配置文件）
     python main.py --server ws://localhost:8000/ws/ui/actuator/
     python main.py --server ws://localhost:8000/ws/ui/actuator/ --id my-actuator
-    
+
     # 打包成 exe 后运行
     WHartTest_Actuator.exe --gui
 """
@@ -121,7 +121,7 @@ language = "zh"
 
 class Config:
     """配置类"""
-    
+
     def __init__(self):
         # 默认配置
         self.ws_url = "ws://127.0.0.1:8000/ws/ui/actuator/"
@@ -133,7 +133,7 @@ class Config:
         self.actuator_id: str | None = None
         self.actuator_name: str | None = None
         self.actuator_description: str | None = None
-        
+
         # 浏览器配置
         self.browser_type = "chromium"
         self.headless = False
@@ -141,38 +141,38 @@ class Config:
         self.user_data_dir = "./data/browser"
         self.launch_timeout = 30
         self.action_timeout = 30
-        
+
         # 执行配置
         self.retry_count = 3
         self.step_interval = 500
         self.screenshot_dir = "./data/screenshots"
         self.max_concurrent = 3  # 批量执行最大并发数
-        
+
         # Trace 配置
         self.trace_enabled = True
         self.trace_dir = "./data/traces"
         self.trace_screenshots = True
         self.trace_snapshots = True
         self.trace_sources = False
-        
+
         # 日志配置
         self.log_level = "INFO"
         self.log_file: str | None = None
-    
+
     def load_from_toml(self, filepath: str) -> None:
         """从TOML文件加载配置"""
         if not tomllib:
             logging.warning("tomllib/tomli 未安装，跳过配置文件加载")
             return
-            
+
         path = Path(filepath)
         if not path.exists():
             logging.info(f"配置文件不存在: {filepath}")
             return
-            
+
         with open(path, 'rb') as f:
             data = tomllib.load(f)
-        
+
         # 服务器配置
         if 'server' in data:
             self.ws_url = data['server'].get('ws_url', self.ws_url)
@@ -180,12 +180,12 @@ class Config:
             self.use_gui = data['server'].get('use_gui', self.use_gui)
             self.api_username = data['server'].get('api_username', self.api_username)
             self.api_password = data['server'].get('api_password', self.api_password)
-        
+
         # 执行器配置
         if 'actuator' in data:
             self.actuator_name = data['actuator'].get('name')
             self.actuator_description = data['actuator'].get('description')
-        
+
         # 浏览器配置
         if 'browser' in data:
             browser = data['browser']
@@ -195,7 +195,7 @@ class Config:
             self.user_data_dir = browser.get('user_data_dir', self.user_data_dir)
             self.launch_timeout = browser.get('launch_timeout', self.launch_timeout)
             self.action_timeout = browser.get('action_timeout', self.action_timeout)
-        
+
         # 执行配置
         if 'execution' in data:
             execution = data['execution']
@@ -203,7 +203,7 @@ class Config:
             self.step_interval = execution.get('step_interval', self.step_interval)
             self.screenshot_dir = execution.get('screenshot_dir', self.screenshot_dir)
             self.max_concurrent = execution.get('max_concurrent', self.max_concurrent)
-        
+
         # Trace 配置
         if 'trace' in data:
             trace = data['trace']
@@ -212,12 +212,12 @@ class Config:
             self.trace_screenshots = trace.get('screenshots', self.trace_screenshots)
             self.trace_snapshots = trace.get('snapshots', self.trace_snapshots)
             self.trace_sources = trace.get('sources', self.trace_sources)
-        
+
         # 日志配置
         if 'logging' in data:
             self.log_level = data['logging'].get('level', self.log_level)
             self.log_file = data['logging'].get('file')
-    
+
     def apply_args(self, args: argparse.Namespace) -> None:
         """应用命令行参数（覆盖配置文件）"""
         if args.server:
@@ -237,12 +237,12 @@ class Config:
 def setup_logging(level: str = 'INFO', log_file: str | None = None):
     """配置日志"""
     handlers = [logging.StreamHandler()]
-    
+
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
-    
+
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -311,7 +311,7 @@ def parse_args():
     return parser.parse_args()
 
 
-async def main():
+async def run():
     """主函数"""
     args = parse_args()
     config_path = resolve_config_path(args.config)
@@ -326,7 +326,7 @@ async def main():
     setup_logging(config.log_level, config.log_file)
     ensure_runtime_dirs(config)
     logger = logging.getLogger('actuator')
-    
+
     # 检查并安装浏览器（首次运行时需要）
     if not args.skip_browser_check:
         logger.info("检查浏览器安装状态...")
@@ -334,7 +334,7 @@ async def main():
             logger.error(f"浏览器 {config.browser_type} 安装失败，请检查网络连接后重试")
             logger.error("或者手动运行: playwright install chromium")
             sys.exit(1)
-    
+
     # GUI 登录模式
     if config.use_gui:
         try:
@@ -347,11 +347,11 @@ async def main():
 
         logger.info("启动 GUI 登录窗口...")
         login_result = show_login_dialog(str(config_path))
-        
+
         if not login_result:
             logger.info("用户取消登录")
             sys.exit(0)
-        
+
         # 使用 GUI 登录获取的凭证更新配置
         config.api_url = login_result['api_url']
         # 根据 API URL 自动生成 WebSocket URL
@@ -361,7 +361,7 @@ async def main():
         else:
             ws_url = api_url.replace('http://', 'ws://', 1)
         config.ws_url = f"{ws_url}/ws/ui/actuator/"
-        
+
         config.api_username = login_result['username']
         config.api_password = login_result['password']
         # 更新执行器名称
@@ -384,12 +384,12 @@ async def main():
         config.trace_sources = login_result.get('trace_sources', config.trace_sources)
         # 更新日志配置
         config.log_level = login_result.get('log_level', config.log_level)
-        
+
         logger.info(f"登录成功: {config.api_username} @ {config.api_url}")
-    
+
     # 生成执行器ID
     actuator_id = config.actuator_id or f"actuator-{os.getpid()}"
-    
+
     logger.info("=" * 50)
     logger.info("UI自动化执行器启动")
     logger.info(f"执行器ID: {actuator_id}")
@@ -400,34 +400,35 @@ async def main():
     logger.info(f"浏览器类型: {config.browser_type}")
     logger.info(f"无头模式: {config.headless}")
     logger.info("=" * 50)
-    
-    # 创建WebSocket客户端，传递配置
-    ws_client = WebSocketClient(config.ws_url, actuator_id, config)
-    
+
     # 创建任务消费者，传递配置
     consumer = TaskConsumer(
-        ws_client, 
-        config.api_url, 
+        None,
+        config.api_url,
         config,
         api_username=config.api_username,
         api_password=config.api_password
     )
-    
+
+    # 创建WebSocket客户端，传递配置
+    ws_client = WebSocketClient(config.ws_url, actuator_id, config, consumer._get_api_token)
+    consumer.ws_client = ws_client
+
     # 设置信号处理（Windows 不支持 add_signal_handler，使用 try/except 处理）
     if sys.platform != 'win32':
         loop = asyncio.get_event_loop()
-        
+
         def signal_handler():
             logger.info("收到停止信号，正在关闭...")
             consumer.stop()
             asyncio.create_task(ws_client.disconnect())
-        
+
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, signal_handler)
             except NotImplementedError:
                 pass
-    
+
     try:
         await consumer.run()
     except KeyboardInterrupt:
@@ -441,5 +442,9 @@ async def main():
         logger.info("执行器已停止")
 
 
+def main():
+    asyncio.run(run())
+
+
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()

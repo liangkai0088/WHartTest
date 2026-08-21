@@ -216,8 +216,8 @@ async function configure(context: vscode.ExtensionContext): Promise<void> {
           return resp.data.id;
         }
       );
-      await cfg.update('codeProjectId', codeProjectId, vscode.ConfigurationTarget.Global);
     }
+    await cfg.update('codeProjectId', codeProjectId, vscode.ConfigurationTarget.Global);
 
     vscode.window.showInformationMessage(
       `WHartTest 配置完成：项目 ${projectId}，源码项目 ${codeProjectId}。令牌已安全保存到 VS Code SecretStorage。`

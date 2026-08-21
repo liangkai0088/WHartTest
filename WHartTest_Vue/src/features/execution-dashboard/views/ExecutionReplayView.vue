@@ -298,7 +298,11 @@ async function loadReplay() {
     // 拉取全部事件
     const allEvents = await getAllRunEvents(runId.value)
     events.value = allEvents
-    currentIndex.value = allEvents.length > 0 ? allEvents.length - 1 : 0
+    const nextIndex = allEvents.length > 0 ? allEvents.length - 1 : 0
+    currentIndex.value = nextIndex
+    const result = reduceUpTo(nextIndex)
+    replayState.run = result.run
+    replayState.nodes = result.nodes
   } catch (e) {
     console.error('[Replay] load failed:', e)
   } finally {
