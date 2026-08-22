@@ -569,3 +569,55 @@ class UiStepBatchUpdatePreservesOverrideTests(TestCase):
         self.assertEqual(self.case_step.case_sort, 1)
         self.assertEqual(self.other_case_step.case_sort, 0)
         self.assertEqual(self.case_step.case_data, expected_case_data)
+
+
+class SelfHealingLogicTests(TestCase):
+    def test_is_locator_failure_matches_message(self):
+        from ui_automation.self_healing import is_locator_failure
+
+        step = {'status': 'failed', 'message': '所有定位器都失效（包含备用定位器）'}
+        self.assertTrue(is_locator_failure(step))
+
+    def test_is_locator_failure_ignores_success(self):
+        from ui_automation.self_healing import is_locator_failure
+
+        step = {'status': 'success', 'message': '定位元素可见并成功'}
+        self.assertFalse(is_locator_failure(step))
+
+    def test_is_locator_failure_ignores_assertion(self):
+        from ui_automation.self_healing import is_locator_failure
+
+        step = {'status': 'failed', 'message': '断言失败：期望 200 实际 500'}
+        self.assertFalse(is_locator_failure(step))
+
+    def test_parse_fix_plain_json(self):
+        from ui_automation.self_healing import parse_fix
+
+        raw = '{"new_locator_type": "css", "new_locator_value": ".btn-login", "reason": "r"}'
+        fix = parse_fix(raw)
+        self.assertEqual(fix['new_locator_type'], 'css')
+        self.assertEqual(fix['new_locator_value'], '.btn-login')
+
+    def test_parse_fix_invalid_raises(self):
+        from ui_automation.self_healing import parse_fix
+
+        with self.assertRaises(ValueError):
+            parse_fix('无 JSON')
+
+    def test_build_prompt_contains_element_info(self):
+        from ui_automation.self_healing import _build_prompt
+
+        element = type('El', (), {
+            'name': '登录按钮',
+            'description': '页面顶部登录按钮',
+            'locator_type': 'xpath',
+            'locator_value': '//button[1]',
+            'locator_type_2': None,
+            'locator_value_2': None,
+            'locator_type_3': None,
+            'locator_value_3': None,
+        })()
+        prompt = _build_prompt(element, 'https://example.com', '定位器失效')
+        self.assertIn('登录按钮', prompt)
+        self.assertIn('//button[1]', prompt)
+        self.assertIn('定位器失效', prompt)

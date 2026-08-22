@@ -1,7 +1,8 @@
 from django.contrib import admin
 from .models import (
     UiModule, UiPage, UiElement, UiPageSteps, UiPageStepsDetailed,
-    UiTestCase, UiCaseStepsDetailed, UiExecutionRecord, UiPublicData, UiEnvironmentConfig
+    UiTestCase, UiCaseStepsDetailed, UiExecutionRecord, UiPublicData, UiEnvironmentConfig,
+    UiSelfHealingRecord,
 )
 
 
@@ -83,3 +84,11 @@ class UiEnvironmentConfigAdmin(admin.ModelAdmin):
     list_display = ('name', 'project', 'base_url', 'browser', 'headless', 'is_default')
     list_filter = ('project', 'browser', 'headless', 'is_default')
     search_fields = ('name', 'base_url')
+
+
+@admin.register(UiSelfHealingRecord)
+class UiSelfHealingRecordAdmin(admin.ModelAdmin):
+    list_display = ('id', 'test_case', 'element', 'status', 'rerun_success', 'created_at')
+    list_filter = ('status', 'rerun_success', 'created_at')
+    search_fields = ('test_case__name', 'failure_message')
+    readonly_fields = ('diagnosis', 'fix_summary', 'rerun_batch_id', 'rerun_success')

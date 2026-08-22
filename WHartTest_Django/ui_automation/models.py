@@ -497,3 +497,51 @@ class UiEnvironmentConfig(models.Model):
         if self.is_default:
             UiEnvironmentConfig.objects.filter(project=self.project, is_default=True).exclude(pk=self.pk).update(is_default=False)
         super().save(*args, **kwargs)
+
+
+class UiSelfHealingRecord(models.Model):
+    """UI 自动化自愈记录，追踪一次定位失效的诊断、回写与重跑验证"""
+
+    STATUS_CHOICES = [
+        ('pending', _('待诊断')),
+        ('diagnosing', _('诊断中')),
+        ('healed', _('已自愈')),
+        ('failed', _('自愈失败')),
+        ('ignored', _('已忽略')),
+    ]
+
+    execution_record = models.ForeignKey(
+        UiExecutionRecord, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='self_healing_records', verbose_name=_('关联执行记录')
+    )
+    test_case = models.ForeignKey(
+        UiTestCase, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='self_healing_records', verbose_name=_('关联用例')
+    )
+    element = models.ForeignKey(
+        UiElement, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='self_healing_records', verbose_name=_('目标元素')
+    )
+    step_id = models.IntegerField(_('失败步骤 ID'), null=True, blank=True)
+    failure_message = models.TextField(_('失败信息'), blank=True)
+    status = models.CharField(
+        _('状态'), max_length=20, choices=STATUS_CHOICES, default='pending'
+    )
+    diagnosis = models.JSONField(_('诊断结果'), default=dict, blank=True)
+    fix_summary = models.JSONField(_('回写摘要'), default=dict, blank=True)
+    rerun_batch_id = models.IntegerField(_('重跑批次 ID'), null=True, blank=True)
+    rerun_success = models.BooleanField(_('重跑是否成功'), null=True, blank=True)
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('UI 自愈记录')
+        verbose_name_plural = _('UI 自愈记录')
+        ordering = ['-created_at']
+        db_table = 'ui_self_healing_record'
+        indexes = [
+            models.Index(fields=['status', 'created_at'], name='ui_heal_status_created_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.test_case_id or ''}-{self.status}-{self.created_at:%Y%m%d%H%M%S}"

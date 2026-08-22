@@ -560,6 +560,14 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 )
                 logger.info(f"测试用例状态已更新: case_id={case_id}, status={status}")
 
+            # 触发定位失效自愈（异步诊断，失败不影响主流程）
+            if status == 3:
+                try:
+                    from .self_healing import trigger_from_execution_record
+                    trigger_from_execution_record(record.id)
+                except Exception:
+                    logger.warning(f"触发自愈失败 record={record.id}", exc_info=True)
+
             # 更新批量执行记录统计
             if batch_id:
                 try:
@@ -568,6 +576,15 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                     logger.info(f"批量执行记录统计已更新: batch_id={batch_id}")
                 except UiBatchExecutionRecord.DoesNotExist:
                     logger.warning(f"批量执行记录不存在: batch_id={batch_id}")
+
+                # 回填自愈重跑结果
+                try:
+                    from .models import UiSelfHealingRecord
+                    UiSelfHealingRecord.objects.filter(
+                        rerun_batch_id=batch_id, rerun_success__isnull=True
+                    ).update(rerun_success=(status == 2))
+                except Exception:
+                    logger.warning(f"回填自愈重跑结果失败 batch_id={batch_id}", exc_info=True)
         except Exception as e:
             logger.error(f"保存执行结果失败: {e}", exc_info=True)
 
