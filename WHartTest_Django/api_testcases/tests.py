@@ -2,7 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from django.test import TestCase
+from django.test import TestCase, SimpleTestCase
 from django.contrib.auth.models import User, Permission
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.test import APIClient
@@ -10,6 +10,7 @@ from rest_framework import status
 
 from projects.models import Project, ProjectMember
 from api_interfaces.models import ApiInterface
+from . import ai_generate
 from .models import (
     ApiTestCaseTag, ApiTestCaseGroup, ApiTestCase,
     ApiTestCaseStep, ApiTestReport, ApiTestReportDetail,
@@ -2349,3 +2350,59 @@ class ApiInterfaceCaseAPITest(TestCase):
         self.assertEqual(details[0].step, precondition)
         self.assertEqual(details[0].extracted_variables['token'], 'abc123')
         self.assertEqual(details[1].step, main_step)
+
+
+class AiGenerateParseTests(SimpleTestCase):
+    def test_parse_generation_json_strips_fence(self):
+        raw = '```json\n{"name": "登录", "steps": []}\n```'
+        result = ai_generate.parse_generation_json(raw)
+        self.assertEqual(result['name'], '登录')
+
+    def test_parse_generation_json_raises_on_empty(self):
+        with self.assertRaises(ValueError):
+            ai_generate.parse_generation_json('no json here')
+
+    def test_normalize_steps_defaults(self):
+        steps = [
+            {'name': 's1', 'method': 'post', 'url': '/a'},
+            {'name': 's2', 'method': 'BROKEN'},
+        ]
+        normalized = ai_generate.normalize_steps(steps)
+
+        self.assertEqual(len(normalized), 2)
+        name_1, data_1 = normalized[0]
+        self.assertEqual(name_1, 's1')
+        self.assertEqual(data_1['method'], 'POST')
+        self.assertEqual(data_1['url'], '/a')
+        self.assertEqual(data_1['headers'], {})
+        self.assertEqual(data_1['extract'], {})
+        self.assertEqual(data_1['validators'], [])
+        # 非法方法回退 GET
+        _, data_2 = normalized[1]
+        self.assertEqual(data_2['method'], 'GET')
+
+    def test_normalize_steps_validators(self):
+        steps = [
+            {
+                'name': 's1',
+                'method': 'GET',
+                'url': '/a',
+                'validators': [
+                    {'check': 'status_code', 'expect': 200, 'assert': 'eq'},
+                    {'eq': ['body.code', 0]},
+                    {'invalid': 'x'},
+                ],
+            }
+        ]
+        normalized = ai_generate.normalize_steps(steps)
+        _, data = normalized[0]
+
+        self.assertEqual(len(data['validators']), 2)
+        self.assertEqual(data['validators'][0]['assert'], 'eq')
+        self.assertEqual(data['validators'][1]['eq'], ['body.code', 0])
+
+    def test_normalize_steps_skips_non_dict(self):
+        steps = ['not-a-step', {'name': 'ok', 'method': 'GET', 'url': '/'}]
+        normalized = ai_generate.normalize_steps(steps)
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0][0], 'ok')

@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -15,6 +17,7 @@ from wharttest_django.viewsets import BaseModelViewSet
 from wharttest_django.permissions import HasModelPermission
 from wharttest_django.api_permissions import IsProjectMemberForResource
 
+from . import ai_generate
 from .models import (
     ApiTestCase, ApiTestCaseStep, ApiTestReport, ApiTestReportDetail,
     ApiTestCaseTag, ApiTestCaseGroup,
@@ -29,6 +32,8 @@ from .serializers import (
     ApiInterfaceCaseReportSerializer, ApiInterfaceCaseReportListSerializer
 )
 from .services import TestCaseService, TestExecutionService, InterfaceCaseExecutionService
+
+logger = logging.getLogger(__name__)
 
 
 class ApiTestCaseFilter(django_filters.FilterSet):
@@ -235,6 +240,36 @@ class ApiTestCaseViewSet(BaseModelViewSet):
             project_id=project_pk
         ).select_related('project', 'module')
         serializer = InterfaceOptionSerializer(interfaces, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'])
+    def ai_generate(self, request, **kwargs):
+        """基于自然语言需求 + 可选接口定义，一键生成 API 测试用例"""
+        requirement = request.data.get('requirement')
+        if not requirement:
+            return Response(
+                {'detail': 'requirement 参数必填'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        interface_ids = request.data.get('interface_ids') or []
+        group_id = request.data.get('group_id')
+
+        from projects.models import Project
+        project = get_object_or_404(Project, pk=self.kwargs.get('project_pk'))
+
+        try:
+            testcase = ai_generate.generate_testcase(
+                project, request.user, requirement, interface_ids, group_id,
+            )
+        except Exception as e:
+            logger.error(f'AI 生成用例失败: {e}')
+            return Response(
+                {'detail': f'AI 生成失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        serializer = self.get_serializer(testcase)
         return Response(serializer.data)
 
     @action(detail=True, methods=['GET'])
