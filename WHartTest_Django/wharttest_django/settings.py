@@ -145,6 +145,7 @@ INSTALLED_APPS = [
     'operation_logs',  # 用户操作日志。
     'file_management',  # 统一文件管理/附件中心。
     'code_coverage',  # 代码覆盖率透视。
+    'perf_test',  # 性能测试平台。
 ]
 
 # ASGI 配置（用于 Channels WebSocket）

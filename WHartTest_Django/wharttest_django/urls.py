@@ -179,6 +179,8 @@ urlpatterns = [
     path("api/operation-logs/", include("operation_logs.urls")),
     # 挂载代码覆盖率路由。
     path("api/code-coverage/", include("code_coverage.urls")),
+    # 挂载性能测试路由。
+    path("api/perf-test/", include("perf_test.urls")),
     # 挂载 OpenAPI schema 接口。
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     # 挂载 Swagger UI。
