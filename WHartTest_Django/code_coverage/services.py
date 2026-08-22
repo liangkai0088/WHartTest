@@ -151,3 +151,119 @@ def parse_coverage_report(
     if fmt == "lcov":
         return parse_lcov(content)
     raise ValueError(f"不支持的覆盖率报告格式: {fmt}")
+
+
+def _file_to_line_map(files: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+    """将文件级明细列表转为 {file_path: {行号字符串: hits}} 索引，便于增量对比。"""
+    result: Dict[str, Dict[str, int]] = {}
+    for f in files or []:
+        path = f.get("file_path")
+        if not path:
+            continue
+        detail = f.get("lines_detail")
+        if not isinstance(detail, dict):
+            detail = {}
+        result[path] = {str(k): int(v) for k, v in detail.items()}
+    return result
+
+
+def compute_coverage_delta(
+    base_files: List[Dict[str, Any]],
+    current_files: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """对比基线文件明细与当前文件明细，计算增量覆盖率。
+
+    增量口径：新增可执行行 = 当前有而基线无的行，或基线未覆盖(hits==0)而当前已覆盖的行；
+    增量覆盖率 = 新增行中被覆盖的行 / 新增行总数。
+
+    返回 (summary, files)。
+    """
+    base_map = _file_to_line_map(base_files)
+    current_map = _file_to_line_map(current_files)
+
+    files_result: List[Dict[str, Any]] = []
+    new_lines_total = 0
+    covered_new_lines_total = 0
+    files_added = 0
+    files_modified = 0
+    files_unchanged = 0
+    files_removed = 0
+
+    current_paths = set(current_map.keys())
+    base_paths = set(base_map.keys())
+
+    for path in sorted(base_paths - current_paths):
+        files_result.append({
+            "file_path": path,
+            "status": "removed",
+            "new_lines": 0,
+            "covered_new_lines": 0,
+            "delta_coverage": 0.0,
+            "removed_lines": len(base_map[path]),
+        })
+        files_removed += 1
+
+    for path in sorted(current_paths):
+        current_lines = current_map[path]
+        base_lines = base_map.get(path)
+
+        if base_lines is None:
+            status = "added"
+            files_added += 1
+            new_lines = len(current_lines)
+            covered_new_lines = sum(1 for h in current_lines.values() if h > 0)
+            removed_lines = 0
+        else:
+            new_lines = 0
+            covered_new_lines = 0
+            for line_no, hits in current_lines.items():
+                base_hits = base_lines.get(line_no)
+                if base_hits is None or base_hits == 0:
+                    new_lines += 1
+                    if hits > 0:
+                        covered_new_lines += 1
+            removed_lines = len(set(base_lines) - set(current_lines))
+            if new_lines == 0 and removed_lines == 0:
+                status = "unchanged"
+                files_unchanged += 1
+            else:
+                status = "modified"
+                files_modified += 1
+
+        delta_coverage = _percent(covered_new_lines, new_lines) if new_lines else 0.0
+        new_lines_total += new_lines
+        covered_new_lines_total += covered_new_lines
+
+        files_result.append({
+            "file_path": path,
+            "status": status,
+            "new_lines": new_lines,
+            "covered_new_lines": covered_new_lines,
+            "delta_coverage": delta_coverage,
+            "removed_lines": removed_lines,
+        })
+
+    summary = {
+        "new_lines_total": new_lines_total,
+        "covered_new_lines": covered_new_lines_total,
+        "delta_coverage": _percent(covered_new_lines_total, new_lines_total),
+        "files_added": files_added,
+        "files_modified": files_modified,
+        "files_unchanged": files_unchanged,
+        "files_removed": files_removed,
+    }
+    return summary, files_result
+
+
+def build_delta_for_reports(base_report, current_report):
+    """从两个 CoverageReport 对象计算增量覆盖率，返回 (summary, files)。
+
+    入参为 model 实例，避免 services 层依赖 ORM 之外的结构，便于复用。
+    """
+    base_files = list(
+        base_report.files.values("file_path", "lines_detail")
+    )
+    current_files = list(
+        current_report.files.values("file_path", "lines_detail")
+    )
+    return compute_coverage_delta(base_files, current_files)

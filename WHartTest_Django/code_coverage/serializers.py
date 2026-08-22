@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import CoverageReport, CoverageFile
+from .models import CoverageReport, CoverageFile, CoverageDelta
 
 
 class CoverageFileSerializer(serializers.ModelSerializer):
@@ -47,3 +47,18 @@ class CoverageUploadSerializer(serializers.Serializer):
         max_length=64, required=False, allow_blank=True, allow_null=True
     )
     file = serializers.FileField()
+
+
+class CoverageDeltaSerializer(serializers.ModelSerializer):
+    uploader_name = serializers.CharField(source='uploader.username', read_only=True)
+
+    class Meta:
+        model = CoverageDelta
+        fields = [
+            'id', 'project', 'report', 'base_report', 'git_commit', 'base_commit',
+            'summary', 'files', 'uploader', 'uploader_name', 'created_at',
+        ]
+        read_only_fields = [
+            'id', 'project', 'report', 'base_report', 'summary', 'files',
+            'uploader', 'created_at',
+        ]

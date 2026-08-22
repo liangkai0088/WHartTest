@@ -9,13 +9,14 @@ from projects.models import Project
 from wharttest_django.pagination import StandardPagination
 from wharttest_django.viewsets import BaseModelViewSet
 
-from .models import CoverageReport, CoverageFile
+from .models import CoverageReport, CoverageFile, CoverageDelta
 from .serializers import (
     CoverageReportSerializer,
     CoverageUploadSerializer,
     CoverageFileSerializer,
+    CoverageDeltaSerializer,
 )
-from .services import parse_coverage_report
+from .services import parse_coverage_report, build_delta_for_reports
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,47 @@ class CoverageReportViewSet(BaseModelViewSet):
             return self.get_paginated_response(serializer.data)
         return Response(CoverageFileSerializer(files, many=True).data)
 
+    @action(detail=True, methods=['post'])
+    def generate_delta(self, request, pk=None):
+        """基于基线报告生成本报告的增量覆盖率"""
+        report = self.get_object()
+        base_report_id = request.data.get('base_report_id')
+        if not base_report_id:
+            return Response(
+                {'error': 'base_report_id 参数必填'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            base_report = CoverageReport.objects.get(id=base_report_id)
+        except CoverageReport.DoesNotExist:
+            return Response(
+                {'error': '基线报告不存在'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if base_report.project_id != report.project_id:
+            return Response(
+                {'error': '基线报告与当前报告不属于同一项目'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        summary, files = build_delta_for_reports(base_report, report)
+        delta = CoverageDelta.objects.create(
+            project=report.project,
+            report=report,
+            base_report=base_report,
+            git_commit=report.git_commit or '',
+            base_commit=base_report.git_commit,
+            summary=summary,
+            files=files,
+            uploader=request.user,
+        )
+        return Response(
+            CoverageDeltaSerializer(delta).data,
+            status=status.HTTP_201_CREATED,
+        )
+
     @staticmethod
     def _resolve_project(project_id, request):
         try:
@@ -116,3 +158,24 @@ class CoverageReportViewSet(BaseModelViewSet):
         if project.members.filter(user=request.user).exists():
             return project
         return None
+
+
+class CoverageDeltaViewSet(BaseModelViewSet):
+    """增量覆盖率视图集（只读）"""
+
+    queryset = CoverageDelta.objects.all()
+    serializer_class = CoverageDeltaSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['project', 'git_commit', 'base_commit']
+    search_fields = ['git_commit', 'base_commit']
+    ordering_fields = ['created_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_superuser:
+            return CoverageDelta.objects.all()
+        return CoverageDelta.objects.filter(
+            project__members__user=user
+        ).distinct()

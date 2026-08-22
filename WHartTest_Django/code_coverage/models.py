@@ -104,3 +104,58 @@ class CoverageFile(models.Model):
 
     def __str__(self):
         return f"{self.file_path} ({self.line_coverage:.1f}%)"
+
+
+class CoverageDelta(models.Model):
+    """增量覆盖率：一次提交相对基线的覆盖变化"""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='coverage_deltas',
+        verbose_name=_('所属项目'),
+    )
+    report = models.ForeignKey(
+        CoverageReport,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='deltas',
+        verbose_name=_('当前提交报告'),
+    )
+    base_report = models.ForeignKey(
+        CoverageReport,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='base_deltas',
+        verbose_name=_('基线报告'),
+    )
+    git_commit = models.CharField(_('Git Commit'), max_length=64)
+    base_commit = models.CharField(_('基线 Commit'), max_length=64, blank=True, null=True)
+
+    # 增量汇总指标
+    summary = models.JSONField(_('增量汇总'), default=dict, blank=True)
+    # 文件级增量明细：[{file_path, status, new_lines, covered_new_lines, delta_coverage, removed_lines}]
+    files = models.JSONField(_('文件级增量明细'), default=list, blank=True)
+
+    uploader = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='uploaded_coverage_deltas',
+        verbose_name=_('生成人'),
+    )
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('增量覆盖率')
+        verbose_name_plural = _('增量覆盖率')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['project', 'git_commit'], name='cov_delta_proj_commit_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.git_commit[:8]} - {self.summary.get('delta_coverage', 0)}%"
