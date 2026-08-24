@@ -280,6 +280,9 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 
 ## 使用示例
 
+> 示例中的 URL、账号和密码只是占位符。真实生成/保存 UI 用例时，必须使用本次测试的项目配置地址、项目登录凭据、公共变量或用户明确给出的值；不要把示例值直接写入真实用例。
+> 如果输入框、按钮或弹窗只有在点击“账号登录/展开/切换标签”等前置操作后才出现，页面步骤必须按真实执行顺序保存这些前置点击。
+
 ### 获取模块树
 
 ```bash
@@ -293,7 +296,7 @@ python ui_automation_tools.py --action create_ui_page \
   --project_id 1 \
   --module_id 5 \
   --name "登录页面" \
-  --url "http://example.com/login" \
+  --url "<项目配置地址>/login" \
   --description "用户登录页面"
 ```
 
@@ -335,9 +338,10 @@ python ui_automation_tools.py --action create_page_step \
 python ui_automation_tools.py --action set_step_details \
   --step_id 20 \
   --steps '[
-    {"step_type": 0, "element": 101, "ope_key": "fill", "ope_value": {"value": "admin"}},
-    {"step_type": 0, "element": 102, "ope_key": "fill", "ope_value": {"value": "password123"}},
-    {"step_type": 0, "element": 103, "ope_key": "click", "ope_value": {}}
+    {"step_type": 0, "element": 100, "ope_key": "click", "ope_value": {"wait_after_click": true}},
+    {"step_type": 0, "element": 101, "ope_key": "fill", "ope_value": {"value": "<项目登录用户名>"}},
+    {"step_type": 0, "element": 102, "ope_key": "fill", "ope_value": {"value": "<项目登录密码>"}},
+    {"step_type": 0, "element": 103, "ope_key": "click", "ope_value": {"wait_after_click": true}}
   ]'
 ```
 
@@ -418,7 +422,7 @@ python ui_automation_tools.py --action get_env_configs --project_id 1
 # 1.4 如果需要，创建新环境配置
 python ui_automation_tools.py --action create_env_config \
   --project_id 1 --name "开发环境" \
-  --base_url "http://dev.example.com" \
+  --base_url "<项目配置地址>" \
   --browser chromium --headless false --timeout 30000
 ```
 
@@ -430,12 +434,13 @@ python ui_automation_tools.py --action get_ui_pages --project_id 1 --module_id 1
 
 # 2.2 如果需要，创建页面
 python ui_automation_tools.py --action create_ui_page \
-  --project_id 1 --module_id 10 --name "登录页面" --url "/login"
+  --project_id 1 --module_id 10 --name "登录页面" --url "<项目配置地址>/login"
 
 # 2.3 批量创建元素（基于元素采集策略：agent-browser 优先，playwright 兜底）
 python ui_automation_tools.py --action batch_create_elements \
   --page_id 20 \
   --elements '[
+    {"name": "打开登录弹窗", "locator_type": "css", "locator_value": "button.login-launcher"},
     {"name": "用户名", "locator_type": "css", "locator_value": "#username"},
     {"name": "密码", "locator_type": "css", "locator_value": "#password"},
     {"name": "登录按钮", "locator_type": "css", "locator_value": "button[type=submit]"}
@@ -449,9 +454,10 @@ python ui_automation_tools.py --action create_page_step \
 python ui_automation_tools.py --action set_step_details \
   --step_id 30 \
   --steps '[
-    {"step_type": 0, "element": 100, "ope_key": "fill", "ope_value": {"value": "${{username}}"}},
-    {"step_type": 0, "element": 101, "ope_key": "fill", "ope_value": {"value": "${{password}}"}},
-    {"step_type": 0, "element": 102, "ope_key": "click", "ope_value": {}}
+    {"step_type": 0, "element": 100, "ope_key": "click", "ope_value": {"wait_after_click": true}},
+    {"step_type": 0, "element": 101, "ope_key": "fill", "ope_value": {"value": "${{username}}"}},
+    {"step_type": 0, "element": 102, "ope_key": "fill", "ope_value": {"value": "${{password}}"}},
+    {"step_type": 0, "element": 103, "ope_key": "click", "ope_value": {"wait_after_click": true}}
   ]'
 
 # 2.5 创建测试用例
@@ -464,9 +470,9 @@ python ui_automation_tools.py --action set_case_steps \
 
 # 2.7 创建公共数据（测试账号）
 python ui_automation_tools.py --action create_public_data \
-  --project_id 1 --key "username" --value "admin"
+  --project_id 1 --key "username" --value "<项目登录用户名>"
 python ui_automation_tools.py --action create_public_data \
-  --project_id 1 --key "password" --value "admin123"
+  --project_id 1 --key "password" --value "<项目登录密码>"
 ```
 
 ### Phase 3: 执行阶段

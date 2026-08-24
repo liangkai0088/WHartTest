@@ -230,6 +230,10 @@ class Config:
             self.use_gui = True
         if args.no_gui:
             self.use_gui = False
+        if args.headed:
+            self.headless = False
+        if args.headless:
+            self.headless = True
         if args.log_level:
             self.log_level = args.log_level
 
@@ -295,6 +299,18 @@ def parse_args():
         action='store_true',
         default=None,
         help='禁用 GUI 登录窗口 (覆盖配置文件)'
+    )
+    parser.add_argument(
+        '--headed',
+        action='store_true',
+        default=False,
+        help='使用可见浏览器执行 (覆盖配置文件)'
+    )
+    parser.add_argument(
+        '--headless',
+        action='store_true',
+        default=False,
+        help='使用无头浏览器执行 (覆盖配置文件)'
     )
     parser.add_argument(
         '--log-level', '-l',

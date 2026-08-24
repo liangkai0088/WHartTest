@@ -1,6 +1,8 @@
 """
 UI自动化执行器 - Python Playwright执行引擎
 使用Python原生Playwright库执行测试，无需Node.js依赖
+
+版本: v2.0 - 通用自动化引擎（向后兼容）
 """
 
 import asyncio
@@ -8,18 +10,37 @@ import gc
 import importlib
 import json
 import logging
+import os
+import re
 import time
 import traceback
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Optional, Union
-from dataclasses import dataclass, field
-from contextlib import asynccontextmanager
+from urllib.parse import urljoin, urlsplit
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, FrameLocator, Page, Playwright, expect
 
 from models import StepResultModel, CaseResultModel
+from operations import has_embedded_navigation_target
 
-logger = logging.getLogger('actuator')
+# 通用引擎模块（新增）
+USE_UNIVERSAL_ENGINE = os.getenv('USE_UNIVERSAL_ENGINE', 'true').lower() == 'true'
+
+if USE_UNIVERSAL_ENGINE:
+    try:
+        from engine_integration import EnhancedExecutor
+        logger = logging.getLogger('actuator')
+        logger.info("通用自动化引擎已启用")
+    except ImportError as e:
+        logger = logging.getLogger('actuator')
+        logger.warning(f"通用引擎模块导入失败，降级到旧实现: {e}")
+        USE_UNIVERSAL_ENGINE = False
+else:
+    logger = logging.getLogger('actuator')
+    logger.info("使用旧版执行器（通用引擎已禁用）")
 
 
 @dataclass
@@ -43,6 +64,8 @@ class StepConfig:
     locator_value_3: Optional[str] = None
     locator_index_3: Optional[int] = None
     sql_execute: Any = None
+    params: dict[str, Any] = field(default_factory=dict)
+    raw_ope_value: Any = None
     # Remote upload metadata used when shared storage path is unavailable
     upload_file_id: Optional[int] = None
     upload_file_name: Optional[str] = None
@@ -63,6 +86,7 @@ class PageStepConfig:
     page_name: str
     steps: list[StepConfig] = field(default_factory=list)
     env_config: Optional[dict] = None
+    skip_url_check: bool = False  # 是否跳过URL验证（允许前端自由重定向）
 
 
 @dataclass
@@ -75,7 +99,7 @@ class TestCaseConfig:
 
 
 class PlaywrightExecutor:
-    """Python原生Playwright执行器"""
+    """Python原生Playwright执行器（已集成通用引擎）"""
 
     def __init__(
         self,
@@ -114,6 +138,19 @@ class PlaywrightExecutor:
         self._stop_requested = False
         self._current_trace_path: Optional[str] = None
         self._page_errors: list[str] = []
+        self.fail_fast = os.getenv('WHART_UI_FAIL_FAST', 'true').lower() != 'false'
+
+        # 通用引擎集成（新增）
+        self._enhanced_executor = None
+        if USE_UNIVERSAL_ENGINE:
+            try:
+                self._enhanced_executor = EnhancedExecutor(
+                    screenshot_dir=screenshot_dir
+                )
+                logger.info("已初始化通用自动化引擎")
+            except Exception as e:
+                logger.warning(f"通用引擎初始化失败，使用旧实现: {e}")
+                self._enhanced_executor = None
 
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -328,7 +365,7 @@ class PlaywrightExecutor:
         """请求停止执行"""
         self._stop_requested = True
 
-    def _setup_page_listeners(self, page: Page):
+    def _setup_page_listeners(self, page: Page, page_errors: Optional[list[str]] = None):
         """注册页面基础事件监听（自动处理弹窗、记录控制台 JS 错误）"""
         async def handle_dialog(dialog):
             logger.warning(f"检测到浏览器弹窗 [{dialog.type}]: '{dialog.message}'，已自动 accept。")
@@ -339,14 +376,48 @@ class PlaywrightExecutor:
 
         def handle_pageerror(exception):
             logger.error(f"页面 JS 抛出未捕获异常: {exception}")
-            if not hasattr(self, '_page_errors'):
-                self._page_errors = []
-            self._page_errors.append(str(exception))
-            if len(self._page_errors) > 50:
-                self._page_errors = self._page_errors[-50:]
+            errors = page_errors if page_errors is not None else self._page_errors
+            errors.append(str(exception))
+            if len(errors) > 50:
+                del errors[:-50]
 
         page.on("dialog", handle_dialog)
         page.on("pageerror", handle_pageerror)
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        value = value or ''
+        value = re.sub(r'xpath=|css=|//|[@#.=\[\]"\'（）()_-]+', ' ', value, flags=re.IGNORECASE)
+        value = re.sub(r'\s+', '', value).lower()
+        return value
+
+    @staticmethod
+    def _locator_target_text(step: StepConfig) -> str:
+        parts = [
+            step.description,
+            step.locator_value,
+            step.locator_value_2 or '',
+            step.locator_value_3 or '',
+            step.input_value if (step.operation_type or '').lower().startswith('assert') else '',
+        ]
+        return ' '.join(part for part in parts if part)
+
+    def _text_similarity(self, source: str, target: str) -> float:
+        source_normalized = self._normalize_text(source)
+        target_normalized = self._normalize_text(target)
+        if not source_normalized or not target_normalized:
+            return 0.0
+        if len(source_normalized) >= 4 and len(target_normalized) >= 4:
+            if source_normalized in target_normalized or target_normalized in source_normalized:
+                return 0.95
+        return SequenceMatcher(None, source_normalized, target_normalized).ratio()
+
+    @staticmethod
+    def _is_recoverable_locator_operation(operation: str) -> bool:
+        return operation in {
+            'click', 'dblclick', 'fill', 'type', 'clear', 'check', 'uncheck',
+            'select', 'hover', 'focus', 'press', 'upload',
+        } or operation.startswith('assert_')
 
     def _get_locator(self, container: Union[Page, FrameLocator], locator_type: str, locator_value: str):
         """根据定位类型获取元素定位器"""
@@ -362,6 +433,261 @@ class PlaywrightExecutor:
             'testid': lambda: container.get_by_test_id(locator_value),
         }
         return locator_map.get(locator_type, lambda: container.locator(locator_value))()
+
+    async def _interactive_element_candidates(self, container: Union[Page, FrameLocator]) -> list[dict[str, Any]]:
+        selector = (
+            'button, a, input, textarea, select, [role="button"], [role="link"], '
+            '[role="menuitem"], [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
+        )
+        locator = container.locator(selector)
+        return await locator.evaluate_all(
+            """
+            (elements) => {
+                const isVisible = (element) => {
+                    const style = window.getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.visibility !== 'hidden'
+                        && style.display !== 'none'
+                        && Number(style.opacity || 1) > 0
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                const textOf = (element) => [
+                    element.innerText,
+                    element.textContent,
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('title'),
+                    element.getAttribute('placeholder'),
+                    element.getAttribute('value'),
+                    element.getAttribute('data-testid'),
+                    element.id,
+                    element.name,
+                ].filter(Boolean).join(' ').trim();
+                return elements
+                    .filter(isVisible)
+                    .slice(0, 120)
+                    .map((element, index) => {
+                        const healId = `actuator-heal-${Date.now()}-${index}`;
+                        element.setAttribute('data-actuator-heal-id', healId);
+                        return {
+                            healId,
+                            tag: element.tagName.toLowerCase(),
+                            role: element.getAttribute('role') || '',
+                            text: textOf(element),
+                            ariaLabel: element.getAttribute('aria-label') || '',
+                            title: element.getAttribute('title') || '',
+                            placeholder: element.getAttribute('placeholder') || '',
+                            testId: element.getAttribute('data-testid') || '',
+                            id: element.id || '',
+                            name: element.getAttribute('name') || '',
+                        };
+                    })
+                    .filter(item => item.text || item.ariaLabel || item.title || item.placeholder || item.testId || item.id || item.name);
+            }
+            """
+        )
+
+    async def _self_heal_locator(self, container: Union[Page, FrameLocator], step: StepConfig, operation: str) -> tuple[Any | None, str]:
+        if not self._is_recoverable_locator_operation(operation):
+            return None, ''
+
+        target_text = self._locator_target_text(step)
+        if len(self._normalize_text(target_text)) < 4:
+            return None, ''
+
+        candidates = await self._interactive_element_candidates(container)
+        ranked = []
+        for candidate in candidates:
+            candidate_text = ' '.join(
+                str(candidate.get(field) or '')
+                for field in ('text', 'ariaLabel', 'title', 'placeholder', 'testId', 'id', 'name')
+            ).strip()
+            score = self._text_similarity(target_text, candidate_text)
+            if score >= 0.78:
+                ranked.append((score, candidate, candidate_text))
+
+        if not ranked:
+            logger.warning(
+                f"步骤 {step.step_id}: 定位器自愈未找到候选。当前页面可交互元素: "
+                + json.dumps(candidates[:20], ensure_ascii=False)
+            )
+            return None, ''
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08:
+            logger.warning(
+                f"步骤 {step.step_id}: 定位器自愈候选不唯一，已放弃自动选择: "
+                + json.dumps([
+                    {'score': round(score, 2), 'text': text[:80]}
+                    for score, _, text in ranked[:5]
+                ], ensure_ascii=False)
+            )
+            return None, ''
+
+        score, candidate, candidate_text = ranked[0]
+        heal_id = candidate.get('healId')
+        if not heal_id:
+            return None, ''
+        locator = container.locator(f'[data-actuator-heal-id="{heal_id}"]')
+        await locator.wait_for(state="visible", timeout=2000)
+        message = (
+            f"自愈定位器命中: tag={candidate.get('tag')}, "
+            f"text='{candidate_text[:80]}', score={score:.2f}"
+        )
+        logger.info(f"步骤 {step.step_id}: {message}")
+        return locator, message
+
+    @staticmethod
+    def _origin(url: str) -> str:
+        parsed = urlsplit(url)
+        return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ''
+
+    def _resolve_page_url(self, page_url: str, base_url: str = '') -> str:
+        page_url = (page_url or '').strip()
+        if not page_url:
+            return ''
+        parsed = urlsplit(page_url)
+        if parsed.scheme and parsed.scheme not in {'http', 'https'}:
+            raise ValueError(f"不支持的页面 URL 协议: {parsed.scheme}")
+        parsed_base = urlsplit(base_url) if base_url else None
+        base_origin = ''
+        if parsed_base and parsed_base.scheme and parsed_base.netloc:
+            if parsed_base.scheme not in {'http', 'https'}:
+                raise ValueError(f"base_url 必须是 http/https 完整地址: {base_url}")
+            base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+        if parsed.scheme and parsed.netloc:
+            if base_origin and self._origin(page_url) != base_origin:
+                raise ValueError(f"页面 URL 超出执行环境允许域名: {page_url}")
+            return page_url
+        if not base_origin:
+            raise ValueError(f"页面 URL 不是完整地址，且未配置 base_url: {page_url}")
+        resolved = urljoin(base_origin.rstrip('/') + '/', page_url.lstrip('/'))
+        if self._origin(resolved) != base_origin:
+            raise ValueError(f"页面 URL 超出执行环境允许域名: {resolved}")
+        return resolved
+
+    @staticmethod
+    def _navigation_matches(expected_url: str, actual_url: str) -> bool:
+        expected = urlsplit(expected_url)
+        actual = urlsplit(actual_url)
+        if (expected.scheme, expected.netloc, expected.path.rstrip('/') or '/') != (
+            actual.scheme, actual.netloc, actual.path.rstrip('/') or '/'
+        ):
+            return False
+        return expected.query == actual.query and expected.fragment == actual.fragment
+
+    @staticmethod
+    def _is_auth_redirect(expected_url: str, actual_url: str) -> bool:
+        expected = urlsplit(expected_url)
+        actual = urlsplit(actual_url)
+        if (expected.scheme, expected.netloc) != (actual.scheme, actual.netloc):
+            return False
+        return has_embedded_navigation_target(actual_url)
+
+    async def _navigate_to_base_url(self, page: Page, base_url: str, label: str = '') -> None:
+        resolved = self._resolve_page_url(base_url, base_url)
+        if not resolved:
+            return
+        logger.info(f"导航到环境 base_url{label}: {resolved}")
+        await page.goto(resolved, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            logger.debug(f"环境 base_url 等待网络空闲超时，继续执行: {resolved}")
+
+    async def _wait_after_click(self, page: Page, step: StepConfig) -> None:
+        before_url = page.url
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            logger.debug(f"步骤 {step.step_id}: click 后等待网络空闲超时，继续执行")
+
+        auth_paths = set(step.params.get('auth_paths') or [])
+        before_path = urlsplit(before_url).path.rstrip('/') or '/'
+        should_wait_url_change = before_path in auth_paths or has_embedded_navigation_target(before_url)
+        if should_wait_url_change:
+            try:
+                await page.wait_for_url(
+                    lambda url: str(url) != before_url and (urlsplit(str(url)).path.rstrip('/') or '/') not in auth_paths,
+                    timeout=10000,
+                )
+                logger.info(f"步骤 {step.step_id}: 点击后页面已跳转到 {page.url}")
+            except Exception as exc:
+                raise TimeoutError(f"步骤 {step.step_id}: 点击后页面未完成跳转，当前仍在 {page.url}") from exc
+
+    async def _navigate_to_page_step_url(self, page: Page, page_step: PageStepConfig, base_url: str = '') -> None:
+        """导航到页面步骤URL，支持灵活的重定向处理
+
+        Args:
+            page: Playwright页面对象
+            page_step: 页面步骤配置
+            base_url: 环境基础URL
+        """
+        page_step_url = self._resolve_page_url(page_step.page_url, base_url)
+        if not page_step_url:
+            logger.debug("页面步骤URL为空，跳过导航")
+            return
+
+        current_url = page.url.rstrip('/')
+        expected_url = page_step_url.rstrip('/')
+
+        # 如果已经在目标URL，跳过导航
+        if current_url == expected_url:
+            logger.debug(f"已在目标URL: {current_url}")
+            return
+
+        logger.info(f"导航到页面步骤 URL: {page_step_url}")
+
+        # 执行导航
+        response = await page.goto(page_step_url, wait_until="domcontentloaded")
+        status = response.status if response else None
+
+        # 检查HTTP状态码
+        if status is not None and status >= 400:
+            raise RuntimeError(
+                f"页面步骤 URL 不可达: {page_step_url}，HTTP {status}。"
+                f"请检查 page_url 是否正确或环境是否可访问。"
+            )
+
+        # 等待网络空闲（可选）
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            logger.debug(f"页面步骤 URL 等待网络空闲超时，继续执行: {page_step_url}")
+
+        # URL验证逻辑
+        final_url = page.url
+
+        # 如果配置了跳过URL检查，直接返回
+        if getattr(page_step, 'skip_url_check', False) is True:
+            logger.info(f"已跳过URL验证（skip_url_check=True）: 期望 {page_step_url}，实际 {final_url}")
+            return
+
+        # 检查导航结果
+        if not self._navigation_matches(page_step_url, final_url):
+            # 1. 登录重定向 - 允许继续（页面步骤可能包含登录操作）
+            if self._is_auth_redirect(page_step_url, final_url):
+                logger.info(
+                    f"检测到登录重定向，将继续执行页面内登录步骤: "
+                    f"期望 {page_step_url}，实际 {final_url}"
+                )
+                return
+
+            # 2. 同源但未到达目标页面 - 配置错误或前置导航不足，不能继续执行后续元素操作。
+            if self._origin(page_step_url) == self._origin(final_url):
+                raise RuntimeError(
+                    f"页面步骤 URL 未到达目标页面: 期望 {page_step_url}，实际 {final_url}。"
+                    f"请检查页面 URL 配置是否正确，或补充进入目标菜单/页面的前置步骤。"
+                )
+
+            # 3. 跨域跳转 - 安全风险，拒绝
+            raise RuntimeError(
+                f"页面步骤 URL 导航后发生跨域跳转（安全限制）: "
+                f"期望 {page_step_url}，实际 {final_url}。"
+                f"请检查: 1) page_url 配置是否正确  2) base_url 环境配置是否匹配  "
+                f"3) 是否存在未预期的重定向逻辑"
+            )
 
     @staticmethod
     def _first_sql_keyword(sql: str) -> str:
@@ -631,16 +957,35 @@ class PlaywrightExecutor:
         step: StepConfig,
         env_config: Optional[dict] = None,
     ) -> tuple[bool, str, str | None]:
-        """执行单个步骤
+        """执行单个步骤（已集成通用引擎）
 
         Returns:
             tuple: (成功与否, 消息, 截图路径(可选))
         """
+        operation = (step.operation_type or '').lower()
+
+        if step.step_type in {4, 5}:
+            labels = {4: '条件判断', 5: 'Python代码'}
+            return False, f"步骤类型暂未启用通用执行: {labels.get(step.step_type, step.step_type)}。请改为普通配置步骤或等待执行器扩展。", None
+
+        legacy_only_operations = {'switch_tab'}
+        should_use_legacy_first = step.step_type == 2 or operation in legacy_only_operations
+
+        # 优先使用通用引擎
+        if self._enhanced_executor is not None and not should_use_legacy_first:
+            try:
+                return await self._enhanced_executor.execute_step_with_engine(
+                    page, step, env_config
+                )
+            except Exception as e:
+                logger.warning(f"通用引擎执行失败，降级到旧实现: {e}")
+                # 继续使用旧实现
+
+        # 旧实现（向后兼容）
         if step.step_type == 2:
             success, message = await asyncio.to_thread(self._execute_sql_step, step, env_config)
             return success, message, None
 
-        operation = (step.operation_type or '').lower()
         screenshot_path: str | None = None
 
         # 等待时间（仅当用户明确设置 > 0 时才等待，用于特殊场景）
@@ -719,6 +1064,15 @@ class PlaywrightExecutor:
             logger.debug(f"步骤 {step.step_id}: {operation} 耗时 {time.time() - op_start:.2f}s")
             return True, f"页面操作 {operation} 执行成功", None
 
+        page_assertions = {
+            'assert_url': lambda: expect(page).to_have_url(step.input_value),
+            'assert_title': lambda: expect(page).to_have_title(step.input_value),
+        }
+        if operation in page_assertions:
+            await page_assertions[operation]()
+            logger.debug(f"步骤 {step.step_id}: {operation} 耗时 {time.time() - op_start:.2f}s")
+            return True, f"页面断言 {operation.replace('assert_', '')} 通过", None
+
         # 元素操作（需要定位器）- 先验证定位器是否有效
         if not step.locator_value or not step.locator_value.strip():
             return False, f"元素定位器为空，请在元素管理中配置定位表达式（步骤: {step.description or step.step_id}）", None
@@ -747,6 +1101,7 @@ class PlaywrightExecutor:
         locator = None
         locator_type_used = step.locator_type
         locator_value_used = step.locator_value
+        heal_message = ''
 
         for idx, (locator_type, locator_value, locator_index) in enumerate(locators_to_try, start=1):
             if not locator_value or not locator_value.strip():
@@ -769,13 +1124,15 @@ class PlaywrightExecutor:
                 break
             except Exception as exc:
                 logger.warning(f"步骤 {step.step_id}: 定位器 {idx} [{locator_type}={locator_value}] 尝试失败或不可见: {exc}")
-                if idx == len(locators_to_try):
-                    locator = candidate
-                    locator_type_used = locator_type
-                    locator_value_used = locator_value
 
         if locator is None:
-            return False, f"所有定位器都失效（包含备用定位器，步骤: {step.description or step.step_id}）", None
+            locator, heal_message = await self._self_heal_locator(target, step, operation)
+            if locator is not None:
+                locator_type_used = 'self_heal'
+                locator_value_used = heal_message
+
+        if locator is None:
+            return False, f"所有定位器都失效（步骤: {step.description or step.step_id}），已记录当前页面可交互元素用于排查", None
 
         locator_time = time.time() - locator_start
         logger.debug(
@@ -797,19 +1154,23 @@ class PlaywrightExecutor:
             'press': lambda: locator.press(step.input_value),
         }
 
+        action_suffix = f"（{heal_message}）" if heal_message else ''
+
         if operation == 'upload':
             action_start = time.time()
             await self._upload_file(page, locator, step.input_value, step)
             action_time = time.time() - action_start
             logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
-            return True, f"元素操作 {operation} 执行成功", None
+            return True, f"元素操作 {operation} 执行成功{action_suffix}", None
 
         if operation in element_operations:
             action_start = time.time()
             await element_operations[operation]()
+            if operation == 'click':
+                await self._wait_after_click(page, step)
             action_time = time.time() - action_start
             logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
-            return True, f"元素操作 {operation} 执行成功", None
+            return True, f"元素操作 {operation} 执行成功{action_suffix}", None
 
         # 断言操作
         if operation.startswith('assert_'):
@@ -823,13 +1184,11 @@ class PlaywrightExecutor:
                 'text': lambda: expect(locator).to_have_text(step.input_value),
                 'value': lambda: expect(locator).to_have_value(step.input_value),
                 'contain_text': lambda: expect(locator).to_contain_text(step.input_value),
-                'url': lambda: expect(page).to_have_url(step.input_value),
-                'title': lambda: expect(page).to_have_title(step.input_value),
             }
             if assert_type in assert_operations:
                 await assert_operations[assert_type]()
                 logger.debug(f"步骤 {step.step_id}: assert_{assert_type} 耗时 {time.time() - op_start:.2f}s")
-                return True, f"断言 {assert_type} 通过", None
+                return True, f"断言 {assert_type} 通过{action_suffix}", None
 
         return False, f"未知操作类型: {operation}", None
 
@@ -872,6 +1231,7 @@ class PlaywrightExecutor:
         step_results = []
         passed_steps = 0
         failed_steps = 0
+        first_failure_message = ''
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
 
         self._stop_requested = False
@@ -890,10 +1250,12 @@ class PlaywrightExecutor:
                 if config.env_config:
                     base_url = config.env_config.get('base_url', '') or ''
                 if base_url:
-                    logger.info(f"导航到环境 base_url: {base_url}")
-                    await self._page.goto(base_url, wait_until="networkidle")
+                    await self._navigate_to_base_url(self._page, base_url)
 
+                stop_remaining_steps = False
                 for page_step in config.page_steps:
+                    if stop_remaining_steps:
+                        break
                     if self._stop_requested:
                         raise Exception("用例被手动停止")
 
@@ -902,23 +1264,7 @@ class PlaywrightExecutor:
                     # 确保使用最新的页签引用进行环境跳转检测
                     page = self._page
 
-                    # 检测页面跳转：仅当下一个页面 URL 与当前不同时才等待
-                    if page_step.page_url:
-                        current_url = page.url
-                        expected_url = page_step.page_url.rstrip('/')
-
-                        # 只有当期望的 URL 与当前 URL 不同时，才等待跳转
-                        if expected_url not in current_url:
-                            try:
-                                # 短暂等待，检测是否有 URL 变化
-                                await page.wait_for_url(
-                                    lambda url: url != current_url,
-                                    timeout=2000
-                                )
-                                logger.debug(f"检测到页面跳转: {current_url} -> {page.url}")
-                            except Exception:
-                                # 没有页面跳转是正常情况
-                                pass
+                    await self._navigate_to_page_step_url(page, page_step, base_url)
 
                     # 执行页面内的步骤
                     for step in page_step.steps:
@@ -955,17 +1301,21 @@ class PlaywrightExecutor:
                                 logger.debug(f"  ✅ {step.description or step.operation_type}")
                             else:
                                 failed_steps += 1
+                                first_failure_message = first_failure_message or f"第 {step.step_id} 步失败: {message}"
                                 logger.warning(f"  ❌ {step.description or step.operation_type}: {message}")
                                 # 失败时额外截图
                                 if not step_screenshot:
                                     screenshot_path = f"{self.screenshot_dir}/fail_{config.case_id}_{step.step_id}.png"
                                     await page.screenshot(path=screenshot_path)
                                     step_result.screenshot = screenshot_path
+                                if self.fail_fast and not step.params.get('continue_on_failure'):
+                                    stop_remaining_steps = True
 
                         except Exception as step_error:
                             step_duration = time.time() - step_start
                             failed_steps += 1
                             error_msg = str(step_error)
+                            first_failure_message = first_failure_message or f"第 {step.step_id} 步异常: {error_msg}"
                             logger.error(f"  ❌ {step.description or step.operation_type}: {error_msg}")
 
                             # 失败时截图
@@ -986,6 +1336,9 @@ class PlaywrightExecutor:
                             )
 
                         step_results.append(step_result)
+                        if step_result.status == 'failed' and self.fail_fast and not step.params.get('continue_on_failure'):
+                            stop_remaining_steps = True
+                            break
 
                     # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
                     try:
@@ -997,6 +1350,10 @@ class PlaywrightExecutor:
                 duration = time.time() - start_time
                 status = 'success' if failed_steps == 0 else 'failed'
                 message = f"用例执行{'成功' if status == 'success' else '失败'}: 通过 {passed_steps}/{total_steps}"
+                if status == 'failed' and first_failure_message:
+                    message += f"，根因: {first_failure_message}"
+                    if self.fail_fast:
+                        message += "，后续步骤已停止以避免级联失败"
                 if self._page_errors:
                     message += f" (捕获 {len(self._page_errors)} 个页面 JS 错误: {'; '.join(self._page_errors[:3])})"
                 logger.info(f"✅ {message}" if status == 'success' else f"❌ {message}")
@@ -1054,8 +1411,8 @@ class PlaywrightExecutor:
                 # 导航到页面
                 if config.page_url:
                     nav_start = time.time()
-                    await page.goto(config.page_url)
-                    await page.wait_for_load_state("domcontentloaded")
+                    base_url = config.env_config.get('base_url', '') if config.env_config else ''
+                    await self._navigate_to_page_step_url(page, config, base_url)
                     logger.debug(f"页面导航 {config.page_name} 耗时 {time.time() - nav_start:.2f}s")
 
                 # 执行页面内的所有步骤
@@ -1140,6 +1497,7 @@ class PlaywrightExecutor:
         step_results = []
         passed_steps = 0
         failed_steps = 0
+        first_failure_message = ''
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
         trace_path = None
         page = None
@@ -1155,8 +1513,8 @@ class PlaywrightExecutor:
 
             page = await context.new_page()
             page.set_default_timeout(self.action_timeout)
-            self._page_errors = []
-            self._setup_page_listeners(page)
+            page_errors: list[str] = []
+            self._setup_page_listeners(page, page_errors)
 
             logger.info(f"[并发] 开始执行用例: {config.case_name}")
 
@@ -1165,32 +1523,18 @@ class PlaywrightExecutor:
             if config.env_config:
                 base_url = config.env_config.get('base_url', '') or ''
             if base_url:
-                logger.info(f"[并发] 导航到环境 base_url: {base_url}")
-                await page.goto(base_url, wait_until="networkidle")
+                await self._navigate_to_base_url(page, base_url, ' [并发]')
 
+            stop_remaining_steps = False
             for page_step in config.page_steps:
+                if stop_remaining_steps:
+                    break
                 if self._stop_requested:
                     raise Exception("用例被手动停止")
 
                 logger.info(f"[并发] 执行页面步骤: {page_step.page_name}")
 
-                # 检测页面跳转：仅当下一个页面 URL 与当前不同时才等待
-                if page_step.page_url:
-                    current_url = page.url
-                    expected_url = page_step.page_url.rstrip('/')
-
-                    # 只有当期望的 URL 与当前 URL 不同时，才等待跳转
-                    if expected_url not in current_url:
-                        try:
-                            # 短暂等待，检测是否有 URL 变化
-                            await page.wait_for_url(
-                                lambda url: url != current_url,
-                                timeout=2000
-                            )
-                            logger.debug(f"[并发] 检测到页面跳转: {current_url} -> {page.url}")
-                        except Exception:
-                            # 没有页面跳转是正常情况
-                            pass
+                await self._navigate_to_page_step_url(page, page_step, base_url)
 
                 # 执行页面内的步骤
                 for step in page_step.steps:
@@ -1220,17 +1564,21 @@ class PlaywrightExecutor:
                             passed_steps += 1
                         else:
                             failed_steps += 1
+                            first_failure_message = first_failure_message or f"第 {step.step_id} 步失败: {message}"
                             if not step_screenshot:
                                 screenshot_path = f"{self.screenshot_dir}/fail_{config.case_id}_{step.step_id}.png"
                                 await page.screenshot(path=screenshot_path)
                                 step_result.screenshot = screenshot_path
                             step_results.append(step_result)
+                            if self.fail_fast and not step.params.get('continue_on_failure'):
+                                stop_remaining_steps = True
                             break
 
                     except Exception as step_error:
                         step_duration = time.time() - step_start
                         failed_steps += 1
                         error_msg = str(step_error)
+                        first_failure_message = first_failure_message or f"第 {step.step_id} 步异常: {error_msg}"
 
                         try:
                             screenshot_path = f"{self.screenshot_dir}/error_{config.case_id}_{step.step_id}.png"
@@ -1248,6 +1596,8 @@ class PlaywrightExecutor:
                             screenshot=screenshot_path
                         )
                         step_results.append(step_result)
+                        if self.fail_fast and not step.params.get('continue_on_failure'):
+                            stop_remaining_steps = True
                         break
 
                     if success:
@@ -1263,8 +1613,12 @@ class PlaywrightExecutor:
             duration = time.time() - start_time
             status = 'success' if failed_steps == 0 else 'failed'
             message = f"用例执行{'成功' if status == 'success' else '失败'}: 通过 {passed_steps}/{total_steps}"
-            if self._page_errors:
-                message += f" (捕获 {len(self._page_errors)} 个页面 JS 错误: {'; '.join(self._page_errors[:3])})"
+            if status == 'failed' and first_failure_message:
+                message += f"，根因: {first_failure_message}"
+                if self.fail_fast:
+                    message += "，后续步骤已停止以避免级联失败"
+            if page_errors:
+                message += f" (捕获 {len(page_errors)} 个页面 JS 错误: {'; '.join(page_errors[:3])})"
 
             # 保存 Trace
             if trace_enabled:

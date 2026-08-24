@@ -45,15 +45,22 @@ class SocketUserManager:
             logger.info(f"Web用户断开: {user_id}, 当前连接数: {len(cls._web_users)}")
 
     @classmethod
-    def add_actuator(cls, actuator_id: str, consumer: 'UiAutomationConsumer'):
+    def add_actuator(cls, actuator_id: str, consumer: 'UiAutomationConsumer', user=None) -> bool:
+        existing = cls._actuator_users.get(actuator_id)
+        if existing is not None and existing is not consumer and not getattr(user, 'is_staff', False):
+            return False
         cls._actuator_users[actuator_id] = consumer
         logger.info(f"执行器连接: {actuator_id}, 当前执行器数: {len(cls._actuator_users)}")
+        return True
 
     @classmethod
-    def remove_actuator(cls, actuator_id: str):
-        if actuator_id in cls._actuator_users:
-            del cls._actuator_users[actuator_id]
-            logger.info(f"执行器断开: {actuator_id}, 当前执行器数: {len(cls._actuator_users)}")
+    def remove_actuator(cls, actuator_id: str, consumer: Optional['UiAutomationConsumer'] = None):
+        if actuator_id not in cls._actuator_users:
+            return
+        if consumer is not None and cls._actuator_users.get(actuator_id) is not consumer:
+            return
+        del cls._actuator_users[actuator_id]
+        logger.info(f"执行器断开: {actuator_id}, 当前执行器数: {len(cls._actuator_users)}")
 
     @classmethod
     def get_actuator(cls, actuator_id: Optional[str] = None) -> Optional['UiAutomationConsumer']:
@@ -171,7 +178,9 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 'headless': False,
                 'connected_at': datetime.datetime.now().isoformat(),
             }
-            SocketUserManager.add_actuator(self.user_id, self)
+            if not SocketUserManager.add_actuator(self.user_id, self, user):
+                await self.close(code=4409)
+                return
         else:
             self.is_actuator = False
             self.user_id = user.username
@@ -194,7 +203,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
         if self.is_actuator:
-            SocketUserManager.remove_actuator(self.user_id)
+            SocketUserManager.remove_actuator(self.user_id, self)
         else:
             SocketUserManager.remove_web_user(self.user_id)
 

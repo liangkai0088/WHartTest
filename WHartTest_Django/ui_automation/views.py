@@ -919,7 +919,7 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
 
 class ActuatorViewSet(viewsets.ViewSet):
     """执行器管理视图"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated]
 
     @action(detail=False, methods=['get'])
     def list_actuators(self, request):
@@ -929,17 +929,21 @@ class ActuatorViewSet(viewsets.ViewSet):
         actuators = []
         for actuator_id, consumer in SocketUserManager._actuator_users.items():
             actuator_info = getattr(consumer, 'actuator_info', {})
-            actuators.append({
+            info = {
                 'id': actuator_id,
                 'name': actuator_info.get('name', actuator_id),
-                'ip': actuator_info.get('ip', 'unknown'),
-                'type': actuator_info.get('type', 'web_ui'),
                 'is_open': actuator_info.get('is_open', True),
-                'debug': actuator_info.get('debug', False),
                 'browser_type': actuator_info.get('browser_type', 'chromium'),
                 'headless': actuator_info.get('headless', False),
-                'connected_at': actuator_info.get('connected_at'),
-            })
+            }
+            if request.user.is_staff:
+                info.update({
+                    'ip': actuator_info.get('ip', 'unknown'),
+                    'type': actuator_info.get('type', 'web_ui'),
+                    'debug': actuator_info.get('debug', False),
+                    'connected_at': actuator_info.get('connected_at'),
+                })
+            actuators.append(info)
 
         return Response({
             'status': 'success',

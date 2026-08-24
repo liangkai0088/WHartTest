@@ -163,6 +163,7 @@ import { useAppI18n } from '@/composables/useAppI18n';
 import { getCurrentServerLanguage } from '@/utils/installLocaleAdapters';
 import { createTask, updateTask, type TaskFormData, type ScheduledTask } from '../services/taskService';
 import { actuatorApi, type ActuatorInfo } from '@/features/ui-automation/api';
+import { extractResponseData } from '@/features/ui-automation/types';
 import UiTestCaseSelectModal from './UiTestCaseSelectModal.vue';
 
 const props = defineProps<{
@@ -372,8 +373,8 @@ const loadActuators = async () => {
   loadingActuators.value = true;
   try {
     const res = await actuatorApi.list();
-    const innerData = (res as any).data?.data?.data;
-    actuators.value = (innerData?.items || []).filter((actuator: ActuatorInfo) => actuator.is_open);
+    const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res);
+    actuators.value = (data?.items || []).filter((actuator: ActuatorInfo) => actuator.is_open);
   } catch {
     actuators.value = [];
   } finally {

@@ -85,15 +85,20 @@ class Command(BaseCommand):
         created_count = 0
         updated_count = 0
 
+        skill_entries = []
         for entry in sorted(os.listdir(skills_dir)):
             entry_path = os.path.join(skills_dir, entry)
             if not os.path.isdir(entry_path):
                 continue
 
-            skill_md_path = os.path.join(entry_path, 'SKILL.md')
-            if not os.path.exists(skill_md_path):
+            skill_dirs = Skill._find_skill_dirs(entry_path)
+            if not skill_dirs:
                 self.stdout.write(self.style.WARNING(f'  跳过 {entry}（无 SKILL.md）'))
                 continue
+            skill_entries.extend((entry, skill_dir) for skill_dir in skill_dirs)
+
+        for entry, entry_path in skill_entries:
+            skill_md_path = os.path.join(entry_path, 'SKILL.md')
 
             try:
                 with open(skill_md_path, 'r', encoding='utf-8') as f:

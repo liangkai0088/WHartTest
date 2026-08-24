@@ -223,13 +223,13 @@ export const envConfigApi = {
 export interface ActuatorInfo {
   id: string
   name: string
-  ip: string
-  type: string
+  ip?: string
+  type?: string
   is_open: boolean
-  debug: boolean
+  debug?: boolean
   browser_type: string
   headless: boolean
-  connected_at: string
+  connected_at?: string
 }
 
 export interface ActuatorStatus {

@@ -112,7 +112,7 @@ class TaskConsumer:
 
         url = f"{self.api_base_url}/api/token/"
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.post(url, json={
                     "username": self.api_username,
                     "password": self.api_password
@@ -140,7 +140,7 @@ class TaskConsumer:
 
         url = f"{self.api_base_url}{path}"
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
                 if response.status_code == 200:
                     data = response.json()
@@ -221,7 +221,7 @@ class TaskConsumer:
 
         url = f"{self.api_base_url}/api/ui-automation/traces/upload/"
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(trust_env=False) as client:
                 with open(trace_path, 'rb') as f:
                     files = {'file': (os.path.basename(trace_path), f, 'application/zip')}
                     response = await client.post(
@@ -872,7 +872,7 @@ class TaskConsumer:
 
         try:
             # Do not follow redirects: a 3xx could send the JWT off-origin.
-            async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=False, trust_env=False) as client:
                 async with client.stream('GET', url, headers=headers) as response:
                     response_sha = (
                         response.headers.get('X-File-Sha256')
@@ -1095,6 +1095,14 @@ class TaskConsumer:
 
         return data_processor
 
+    @staticmethod
+    def _normalize_operation_params(ope_value: Any) -> dict[str, Any]:
+        if ope_value is None or ope_value == '':
+            return {}
+        if isinstance(ope_value, dict):
+            return dict(ope_value)
+        return {'value': ope_value, 'text': ope_value}
+
     def _build_page_step_config(
         self,
         data: dict,
@@ -1180,6 +1188,8 @@ class TaskConsumer:
                 if not isinstance(sql_execute, (dict, str)):
                     sql_execute = {}
 
+                ope_value = data_processor.replace(ope_value)
+
                 original_input = input_value
                 input_value = data_processor.replace(input_value)
                 if original_input != input_value:
@@ -1234,6 +1244,8 @@ class TaskConsumer:
                     return None
 
 
+            params = self._normalize_operation_params(ope_value)
+
             upload_file_id = None
             upload_file_name = None
             upload_download_url = None
@@ -1274,6 +1286,8 @@ class TaskConsumer:
                 locator_value_3=locator_value_3 or None,
                 locator_index_3=_parse_index(detail.get('locator_index_3')),
                 sql_execute=sql_execute,
+                params=params,
+                raw_ope_value=ope_value,
                 upload_file_id=upload_file_id,
                 upload_file_name=upload_file_name,
                 upload_download_url=upload_download_url,

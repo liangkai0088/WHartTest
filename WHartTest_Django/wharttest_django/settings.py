@@ -153,20 +153,14 @@ INSTALLED_APPS = [
 # 指定 ASGI 入口，支持 WebSocket。
 ASGI_APPLICATION = "wharttest_django.asgi.application"
 
-# Channels Layer 配置（使用 Redis 通道层，与 Celery broker 共用同一 Redis）
-# 支持通过 CHANNELS_REDIS_URL 覆盖；默认与 CELERY_BROKER_URL 保持一致。
-# 附加 socket_connect_timeout 避免 Redis 不可用时阻塞 celery 任务。
-# 测试环境如需无 Redis 运行，可在此覆盖回 InMemoryChannelLayer。
+# Channels Layer 配置（使用 Redis 通道层）。
+# 默认使用独立 DB，避免 Celery broker 流量阻塞 WebSocket 通道。
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [
-                os.environ.get(
-                    "CHANNELS_REDIS_URL",
-                    os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0"),
-                )
-                + "?socket_connect_timeout=5&socket_timeout=5"
+                os.environ.get("CHANNELS_REDIS_URL", "redis://localhost:6379/1")
             ],
         },
     }

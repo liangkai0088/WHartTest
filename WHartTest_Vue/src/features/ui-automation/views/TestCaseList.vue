@@ -47,7 +47,7 @@
             </div>
           </template>
           <a-option v-for="act in actuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
-            {{ act.name || act.id }}
+            {{ formatActuatorLabel(act) }}
             <a-tag v-if="act.is_open" color="green" size="small" style="margin-left: 4px">{{ pageText.online }}</a-tag>
             <a-tag v-else color="gray" size="small" style="margin-left: 4px">{{ pageText.offline }}</a-tag>
           </a-option>
@@ -189,7 +189,7 @@
         <a-form-item field="description" :label="pageText.caseDescription">
           <a-textarea v-model="formData.description" :placeholder="pageText.enterCaseDescription" :auto-size="{ minRows: 2, maxRows: 4 }" />
         </a-form-item>
-      
+
           <a-form-item label="附件">
             <FileAttachmentPicker
               v-model="formData.file_ids"
@@ -285,8 +285,11 @@ const pageText = computed(() => (
         deleteFailed: 'Delete failed',
         copySuccess: 'Copied successfully',
         copyFailed: 'Copy failed',
-        noActuatorAvailable: 'No actuator is available. Start the actuator service first.',
+        noActuatorAvailable: 'No actuator is available. Start the local actuator on your Mac first.',
         selectOnlineActuator: 'Select an online actuator',
+        actuatorLoadFailed: 'Failed to load actuators. Check login status and backend service.',
+        headedBrowser: 'Visible browser',
+        headlessBrowser: 'Headless',
         websocketConnectFailed: 'WebSocket connection failed',
         runCommandFailed: 'Failed to send execution command',
         batchRunCommandFailed: 'Failed to send batch execution command',
@@ -353,8 +356,11 @@ const pageText = computed(() => (
         deleteFailed: '删除失败',
         copySuccess: '复制成功',
         copyFailed: '复制失败',
-        noActuatorAvailable: '没有可用的执行器，请先启动执行器服务',
+        noActuatorAvailable: '没有可用的执行器，请先在本机 Mac 启动执行器服务',
         selectOnlineActuator: '请选择一个在线的执行器',
+        actuatorLoadFailed: '获取执行器列表失败，请检查登录状态和后端服务',
+        headedBrowser: '可见浏览器',
+        headlessBrowser: '无头',
         websocketConnectFailed: 'WebSocket 连接失败',
         runCommandFailed: '发送执行命令失败',
         batchRunCommandFailed: '发送批量执行命令失败',
@@ -453,6 +459,11 @@ const levelOptions = computed(() => (
 
 const batchExecuteLabel = computed(() => pageText.value.batchExecuteLabel(selectedRowKeys.value.length))
 const batchDeleteLabel = computed(() => pageText.value.batchDeleteLabel(selectedRowKeys.value.length))
+
+const formatActuatorLabel = (actuator: ActuatorInfo) => {
+  const mode = actuator.headless ? pageText.value.headlessBrowser : pageText.value.headedBrowser
+  return `${actuator.name || actuator.id} · ${actuator.browser_type} · ${mode}`
+}
 
 const testCaseModalTitle = computed(() => (
   isEdit.value ? pageText.value.editCase : pageText.value.addCase
@@ -670,24 +681,8 @@ const viewSteps = (record: UiTestCase) => {
 }
 
 const runTestCase = async (record: UiTestCase) => {
-  // 先获取执行器列表
-  await fetchActuators()
-
-  // 检查是否有可用执行器
-  if (actuators.value.length === 0 || !actuators.value.some(a => a.is_open)) {
-    Message.warning(pageText.value.noActuatorAvailable)
+  if (!await ensureOnlineActuator()) {
     return
-  }
-
-  // 如果没有选择执行器，自动选择第一个可用的
-  if (!selectedActuator.value) {
-    const available = actuators.value.find(a => a.is_open)
-    if (available) {
-      selectedActuator.value = available.id
-    } else {
-      Message.warning(pageText.value.selectOnlineActuator)
-      return
-    }
   }
 
   // 如果没有选择环境配置，使用默认的
@@ -729,24 +724,8 @@ const runBatchTestCases = async () => {
     return
   }
 
-  // 先获取执行器列表
-  await fetchActuators()
-
-  // 检查是否有可用执行器
-  if (actuators.value.length === 0 || !actuators.value.some(a => a.is_open)) {
-    Message.warning(pageText.value.noActuatorAvailable)
+  if (!await ensureOnlineActuator()) {
     return
-  }
-
-  // 如果没有选择执行器，自动选择第一个可用的
-  if (!selectedActuator.value) {
-    const available = actuators.value.find(a => a.is_open)
-    if (available) {
-      selectedActuator.value = available.id
-    } else {
-      Message.warning(pageText.value.selectOnlineActuator)
-      return
-    }
   }
 
   // 如果没有选择环境配置，使用默认的
@@ -766,12 +745,13 @@ const runBatchTestCases = async () => {
   }
 
   // 发送批量执行命令
-  executingIds.value.push(...selectedRowKeys.value)
-  const success = uiWebSocket.runTestCases(selectedRowKeys.value, selectedEnvConfig.value, selectedActuator.value)
+  const caseIds = [...selectedRowKeys.value]
+  executingIds.value.push(...caseIds)
+  const success = uiWebSocket.runTestCases(caseIds, selectedEnvConfig.value, selectedActuator.value)
   if (success) {
-    Message.info(pageText.value.startedBatchRun(selectedRowKeys.value.length))
+    Message.info(pageText.value.startedBatchRun(caseIds.length))
     // 更新选中用例状态为"执行中"
-    for (const caseId of selectedRowKeys.value) {
+    for (const caseId of caseIds) {
       const idx = testcaseData.value.findIndex(tc => tc.id === caseId)
       if (idx !== -1) {
         testcaseData.value[idx].status = 1
@@ -781,7 +761,7 @@ const runBatchTestCases = async () => {
     selectedRowKeys.value = []
   } else {
     Message.error(pageText.value.batchRunCommandFailed)
-    executingIds.value = executingIds.value.filter(id => !selectedRowKeys.value.includes(id))
+    executingIds.value = executingIds.value.filter(id => !caseIds.includes(id))
   }
 }
 
@@ -795,7 +775,7 @@ const batchDeleteTestCases = async () => {
   try {
     const res = await testCaseApi.batchDelete(selectedRowKeys.value)
     const result = extractResponseData<{ message?: string }>(res)
-    
+
     if (result) {
       Message.success(result.message || pageText.value.batchDeleteSuccess(selectedRowKeys.value.length))
       // 清空选择
@@ -851,23 +831,48 @@ const fetchEnvConfigs = async () => {
 }
 
 /** 获取执行器列表 */
-const fetchActuators = async () => {
+const fetchActuators = async (showError = false) => {
   try {
     const res = await actuatorApi.list()
     const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
     actuators.value = data?.items ?? []
-    // 自动选择第一个可用的执行器
-    if (!selectedActuator.value && actuators.value.length > 0) {
-      const available = actuators.value.find(a => a.is_open)
-      if (available) selectedActuator.value = available.id
+    const available = actuators.value.find(a => a.is_open)
+    const selected = actuators.value.find(a => a.id === selectedActuator.value && a.is_open)
+    if (!selected) {
+      selectedActuator.value = available?.id
     }
+    return true
   } catch {
-    // 静默失败
+    actuators.value = []
+    selectedActuator.value = undefined
+    if (showError) {
+      Message.error(pageText.value.actuatorLoadFailed)
+    }
+    return false
   }
+}
+
+const ensureOnlineActuator = async () => {
+  const loaded = await fetchActuators(true)
+  if (!loaded) return false
+
+  if (!actuators.value.some(a => a.is_open)) {
+    selectedActuator.value = undefined
+    Message.warning(pageText.value.noActuatorAvailable)
+    return false
+  }
+
+  if (!selectedActuator.value) {
+    Message.warning(pageText.value.selectOnlineActuator)
+    return false
+  }
+
+  return true
 }
 
 /** WebSocket 事件监听 */
 let offCaseResult: (() => void) | null = null
+let offSocketMessage: (() => void) | null = null
 
 watch(() => props.selectedModuleId, (newVal) => {
   filters.module = newVal
@@ -893,6 +898,16 @@ const refresh = () => {
   fetchModules()
   fetchTestCases()
   fetchEnvConfigs()
+  fetchActuators()
+}
+
+const handleSocketMessage = (data: any) => {
+  if (data.code === 200 || data.data?.func_name) return
+  if (executingIds.value.length > 0) {
+    executingIds.value = []
+    fetchTestCases()
+  }
+  Message.error(data.msg || pageText.value.runCommandFailed)
 }
 
 defineExpose({ refresh })
@@ -900,11 +915,13 @@ defineExpose({ refresh })
 onMounted(() => {
   // 监听用例执行结果
   offCaseResult = uiWebSocket.on(UiSocketEnum.CASE_RESULT, handleCaseResult)
+  offSocketMessage = uiWebSocket.on('*', handleSocketMessage)
 })
 
 onUnmounted(() => {
   // 清理事件监听
   offCaseResult?.()
+  offSocketMessage?.()
 })
 </script>
 

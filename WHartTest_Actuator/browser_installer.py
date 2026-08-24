@@ -69,7 +69,8 @@ def install_browser(browser_type: str = 'chromium') -> bool:
         # 设置环境变量
         env = os.environ.copy()
         env['PLAYWRIGHT_BROWSERS_PATH'] = str(browser_path)
-        
+        env.setdefault('PLAYWRIGHT_DOWNLOAD_HOST', 'https://npmmirror.com/mirrors/playwright')
+
         # 使用 playwright install 命令
         if getattr(sys, 'frozen', False):
             # 打包环境：使用内置的 playwright driver

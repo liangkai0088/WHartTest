@@ -413,6 +413,61 @@ def _save_result(result: TestCaseResult):
     result.save()
 
 
+def _collect_runtime_skill_screenshots(
+    project_id: int,
+    testcase_id: int,
+    chat_session_id: str | None,
+) -> list[str]:
+    """Collect screenshots produced by the current Skill execution only."""
+    if not chat_session_id:
+        return []
+
+    media_root = os.path.abspath(settings.MEDIA_ROOT)
+    screenshots_dir = os.path.abspath(
+        os.path.join(
+            media_root,
+            "skill_runtime",
+            "screenshots",
+            str(project_id),
+            str(testcase_id),
+        )
+    )
+    if not screenshots_dir.startswith(media_root + os.sep):
+        return []
+
+    marker_path = os.path.join(screenshots_dir, ".chat_session")
+    if not os.path.isfile(marker_path):
+        return []
+
+    try:
+        with open(marker_path, "r", encoding="utf-8") as f:
+            if f.read().strip() != chat_session_id:
+                return []
+    except OSError:
+        return []
+
+    image_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+    screenshot_files = []
+    for root, _, filenames in os.walk(screenshots_dir):
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in image_extensions:
+                continue
+            path = os.path.join(root, filename)
+            try:
+                screenshot_files.append((os.path.getmtime(path), path))
+            except OSError:
+                continue
+
+    screenshot_files.sort(key=lambda item: (item[0], item[1]))
+    return [
+        _normalize_media_url(os.path.relpath(path, media_root).replace(os.sep, "/"))
+        for _, path in screenshot_files
+    ]
+
+
 def _normalize_media_url(url: str) -> str:
     """
     规范化媒体URL，确保正确添加MEDIA_URL前缀
@@ -800,20 +855,20 @@ async def _execute_testcase_via_chat_api(result: TestCaseResult):
             execution_log.append(f"测试完成 - 状态: {'失败' if has_error else '通过'}")
             execution_log.append(f"{'='*50}\n")
         
-        # 获取测试用例的截图
+        # 获取本次 Skill 执行产生的运行截图，不能回填用例预置截图。
         try:
-            testcase_screenshots = await sync_to_async(
-                lambda: list(testcase.screenshots.filter(
-                    step_number__isnull=False
-                ).order_by('step_number').values_list('screenshot', flat=True))
-            )()
-            
-            if testcase_screenshots:
-                screenshots = [_normalize_media_url(url) for url in testcase_screenshots]
-                logger.info(f"从测试用例获取到 {len(screenshots)} 个截图URL")
+            screenshots = await sync_to_async(
+                _collect_runtime_skill_screenshots,
+                thread_sensitive=False,
+            )(project.id, testcase.id, session_id)
+            if screenshots:
+                logger.info("从本次 Skill 执行获取到 %s 个截图URL", len(screenshots))
+                execution_log.append(f"✓ 收集本次运行截图 {len(screenshots)} 张")
+            else:
+                logger.info("本次 Skill 执行未生成运行截图: testcase_id=%s", testcase.id)
         except Exception as e:
-            logger.warning(f"获取测试用例截图失败: {e}")
-        
+            logger.warning(f"获取本次运行截图失败: {e}")
+
         if result.status == 'running':
             result.status = 'pass'
             execution_log.append("\n✓ 所有步骤执行完成")

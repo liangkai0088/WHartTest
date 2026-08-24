@@ -303,7 +303,14 @@ router.beforeEach((to, _from, next) => { // 注册全局前置守卫，在每次
     console.log('[Router Guard] 未登录，重定向到登录页'); // 输出未登录拦截日志。
     next({ name: 'Login', query: { redirect: to.fullPath } }); // 跳转登录页并携带原目标地址以支持登录后回跳。
   } else if (isLoggedIn && isPublicRoute) { // 已登录但访问登录/注册页时触发反向重定向。
-    // 已登录但访问登录/注册页，重定向到首页
+    const redirectTarget = typeof to.query.redirect === 'string' && to.query.redirect ? to.query.redirect : null; // 优先保留未登录前的原始目标地址。
+    if (redirectTarget) {
+      console.log('[Router Guard] 已登录，重定向到原目标页:', redirectTarget); // 输出 redirect 回跳日志。
+      next(redirectTarget); // 登录页带 redirect 时回到原目标页，而不是固定跳首页。
+      return;
+    }
+
+    // 已登录但访问登录/注册页且没有 redirect，重定向到首页
     console.log('[Router Guard] 已登录，重定向到首页'); // 输出已登录访问公开页的重定向日志。
     next({ name: 'Dashboard' }); // 直接跳到仪表盘，避免重复登录/注册操作。
   } else {

@@ -109,12 +109,14 @@ class UiWebSocketService {
       this.ws.onclose = (event) => {
         console.log('[WebSocket] Disconnected:', event.code, event.reason)
         this.connected.value = false
+        this.notifyLifecycleError(event.reason || 'WebSocket disconnected')
         this.attemptReconnect()
       }
 
       this.ws.onerror = (event) => {
         console.error('[WebSocket] Error:', event)
         this.error.value = new Error('WebSocket connection error')
+        this.notifyLifecycleError(this.error.value.message)
         reject(this.error.value)
       }
 
@@ -130,19 +132,26 @@ class UiWebSocketService {
       const data: SocketDataModel = JSON.parse(rawData)
       console.log('[WebSocket] Received:', data)
 
-      // 根据 func_name 触发对应的处理函数
+      const allHandlers = this.handlers.get('*') || []
+      allHandlers.forEach(handler => handler(data))
+
       const funcName = data.data?.func_name
       if (funcName) {
         const handlers = this.handlers.get(funcName) || []
         handlers.forEach(handler => handler(data))
       }
-
-      // 触发通用消息处理
-      const allHandlers = this.handlers.get('*') || []
-      allHandlers.forEach(handler => handler(data))
     } catch (e) {
       console.error('[WebSocket] Failed to parse message:', e)
     }
+  }
+
+  private notifyLifecycleError(message: string) {
+    const handlers = this.handlers.get('*') || []
+    handlers.forEach(handler => handler({
+      code: 500,
+      msg: message,
+      is_notice: 1,
+    }))
   }
 
   /** 重连逻辑 */

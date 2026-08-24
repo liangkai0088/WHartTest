@@ -15,6 +15,7 @@ import json
 import mimetypes
 import re
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
 
 from langchain_core.tools import tool as langchain_tool
 from django.conf import settings
@@ -23,6 +24,92 @@ from .output_sanitizer import strip_terminal_control_sequences
 from .persistent_playwright import PlaywrightSessionManager, extract_runjs_args
 
 logger = logging.getLogger("orchestrator_integration")
+
+
+def _build_container_reachable_url(project_url: Optional[str]) -> Optional[str]:
+    """Return a browser URL reachable from the backend container when possible."""
+    if not project_url:
+        return None
+
+    parsed = urlparse(project_url)
+    if parsed.hostname not in {"localhost", "127.0.0.1"}:
+        return None
+
+    replacement_host = os.getenv("WHARTTEST_LOCAL_BROWSER_HOST", "host.docker.internal")
+    netloc = replacement_host
+    if parsed.port:
+        netloc = f"{replacement_host}:{parsed.port}"
+
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def _replace_url_origin(command: str, source_origin: str, target_origin: str) -> str:
+    if not command or not source_origin or not target_origin:
+        return command
+    return re.sub(
+        rf"{re.escape(source_origin)}(?=[/\\\"'\s),;]|$)",
+        target_origin,
+        command,
+    )
+
+
+def _rewrite_local_browser_url(command: str, project_url: Optional[str]) -> str:
+    runtime_url = _build_container_reachable_url(project_url)
+    if not command or not project_url or not runtime_url:
+        return command
+
+    parsed = urlparse(project_url)
+    runtime = urlparse(runtime_url)
+    if not parsed.scheme or not parsed.port:
+        return command.replace(project_url, runtime_url)
+
+    runtime_origin = f"{runtime.scheme}://{runtime.netloc}"
+    port = parsed.port
+    for local_host in ("localhost", "127.0.0.1"):
+        local_origin = f"{parsed.scheme}://{local_host}:{port}"
+        command = _replace_url_origin(command, local_origin, runtime_origin)
+    return command
+
+
+def _rewrite_ui_automation_persisted_url(command: str, project_url: Optional[str]) -> str:
+    """Convert backend-container browser URLs back to project URLs before saving UI cases."""
+    runtime_url = _build_container_reachable_url(project_url)
+    if not command or not project_url or not runtime_url:
+        return command
+
+    project = urlparse(project_url)
+    runtime = urlparse(runtime_url)
+    if not project.scheme or not project.netloc or not runtime.scheme or not runtime.netloc:
+        return command
+
+    project_origin = f"{project.scheme}://{project.netloc}"
+    runtime_origin = f"{runtime.scheme}://{runtime.netloc}"
+    return _replace_url_origin(command, runtime_origin, project_origin)
+
+
+def _ensure_skill_files(skill) -> Optional[str]:
+    """Ensure a bound Skill has files on disk, restoring bundled skills when possible."""
+    skill_dir = skill.get_full_path()
+    if skill_dir and os.path.isdir(skill_dir):
+        return skill_dir
+
+    try:
+        from django.core.management import call_command
+
+        logger.warning(
+            "[skill_tools] Skill '%s' directory missing, syncing bundled skills",
+            skill.name,
+        )
+        call_command("init_skills", verbosity=0)
+    except Exception as exc:
+        logger.exception("[skill_tools] Failed to sync bundled skills: %s", exc)
+
+    skill.refresh_from_db()
+    skill_dir = skill.get_full_path()
+    if skill_dir and os.path.isdir(skill_dir):
+        return skill_dir
+    return None
+
 
 _playwright_session_manager: Optional[PlaywrightSessionManager] = None
 _playwright_session_manager_lock = threading.Lock()
@@ -367,12 +454,14 @@ def get_skill_tools(
     project_id: Optional[int] = None,
     test_case_id: Optional[int] = None,
     chat_session_id: Optional[str] = None,
+    project_url: Optional[str] = None,
 ) -> list[object]:
     """获取 Skill 工具列表（Skills 全局共享，不限制项目）"""
     current_user_id = user_id
     current_project_id = project_id if project_id is not None else 0
     current_test_case_id = test_case_id
     current_chat_session_id = chat_session_id
+    current_project_url = project_url
 
     @langchain_tool
     def read_skill_content(skill_name: str) -> str:
@@ -401,6 +490,22 @@ def get_skill_tools(
                 )
                 available_list = list(available)
                 return f"错误: 未找到名为 '{skill_name}' 的 Skill。可用的 Skills: {available_list}"
+
+            skill_dir = _ensure_skill_files(skill)
+            if not skill_dir:
+                return f"错误: Skill '{skill_name}' 目录不存在，且无法从预置 Skills 恢复"
+
+            skill_md_path = os.path.join(skill_dir, "SKILL.md")
+            if os.path.isfile(skill_md_path):
+                try:
+                    with open(skill_md_path, "r", encoding="utf-8") as f:
+                        file_content = f.read()
+                    if file_content and file_content != skill.skill_content:
+                        skill.skill_content = file_content
+                        skill.save(update_fields=["skill_content", "updated_at"])
+                    return file_content
+                except UnicodeDecodeError:
+                    return f"错误: Skill '{skill_name}' 的 SKILL.md 文件编码必须为 UTF-8"
 
             if not skill.skill_content:
                 return f"错误: Skill '{skill_name}' 没有 SKILL.md 内容"
@@ -433,9 +538,9 @@ def get_skill_tools(
                 available_list = list(available)
                 return f"错误: 未找到名为 '{skill_name}' 的 Skill。可用的 Skills: {available_list}"
 
-            skill_dir = skill.get_full_path()
-            if not skill_dir or not os.path.isdir(skill_dir):
-                return f"错误: Skill '{skill_name}' 目录不存在"
+            skill_dir = _ensure_skill_files(skill)
+            if not skill_dir:
+                return f"错误: Skill '{skill_name}' 目录不存在，且无法从预置 Skills 恢复"
 
             logger.info(f"[execute_skill_script] 在目录 {skill_dir} 执行: {command}")
 
@@ -443,7 +548,11 @@ def get_skill_tools(
             env["WHARTTEST_BACKEND_URL"] = getattr(
                 settings, "WHARTTEST_BACKEND_URL", "http://localhost:8000"
             )
-            env["WHARTTEST_API_KEY"] = getattr(settings, "WHARTTEST_API_KEY", "")
+            env["WHARTTEST_API_KEY"] = getattr(
+                settings,
+                "WHARTTEST_API_KEY",
+                "wharttest-default-mcp-key-2025",
+            ) or "wharttest-default-mcp-key-2025"
 
             case_dir_key = None
             if current_test_case_id:
@@ -471,7 +580,18 @@ def get_skill_tools(
             import platform
             import re
 
-            exec_command = command
+            if skill_name == "ui-automation":
+                exec_command = _rewrite_ui_automation_persisted_url(command, current_project_url)
+                if exec_command != command:
+                    logger.info(
+                        "[execute_skill_script] 已将容器浏览器 URL 转换为项目配置地址后保存"
+                    )
+            else:
+                exec_command = _rewrite_local_browser_url(command, current_project_url)
+                if exec_command != command:
+                    logger.info(
+                        "[execute_skill_script] 已将本地项目 URL 转换为容器可访问地址"
+                    )
             if platform.system() == "Windows":
                 # 处理多行字符串：将双引号内的换行符替换为空格或分号
                 def collapse_multiline(m):

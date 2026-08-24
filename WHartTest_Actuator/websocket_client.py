@@ -4,6 +4,7 @@ UI自动化执行器 - WebSocket客户端
 """
 
 import asyncio
+import inspect
 import json
 import logging
 from typing import Optional, Callable, Any
@@ -66,6 +67,11 @@ class WebSocketClient:
         """建立WebSocket连接"""
         try:
             token = await self.token_provider() if self.token_provider else None
+            if self.token_provider and not token:
+                logger.error("获取 API Token 失败，请检查 api_url、用户名和密码")
+                self.connected = False
+                self._stop_event.set()
+                return False
             connect_url = build_websocket_connect_url(self.url, self.actuator_id, token)
             origin = build_websocket_origin(self.url)
             connect_kwargs = {
@@ -73,6 +79,8 @@ class WebSocketClient:
                 'ping_timeout': 10,
                 'close_timeout': 10,
             }
+            if 'proxy' in inspect.signature(websockets.connect).parameters:
+                connect_kwargs['proxy'] = None
             if origin:
                 connect_kwargs['origin'] = origin
 
@@ -165,8 +173,8 @@ class WebSocketClient:
                 await self._handle_message(message)
             except asyncio.TimeoutError:
                 continue
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("连接已关闭，准备重连")
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(f"连接已关闭，准备重连: code={e.code}, reason={e.reason or '-'}")
                 self.connected = False
             except Exception as e:
                 logger.error(f"接收消息错误: {e}")
@@ -208,5 +216,7 @@ class WebSocketClient:
         """运行客户端"""
         if not await self.connect():
             logger.error("初始连接失败")
+            if self._stop_event.is_set():
+                return
 
         await self.receive_loop()
