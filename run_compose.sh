@@ -2120,10 +2120,10 @@ run_local_mode() {
   fi
 
   echo "构建业务服务镜像..."
-  "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" build "${build_args[@]}"
+  "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" build ${build_args[@]+"${build_args[@]}"}
 
   echo "启动容器（本地构建模式）..."
-  "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" up "${up_args[@]}"
+  "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" up ${up_args[@]+"${up_args[@]}"}
 
   cleanup_ranked_dir
 }

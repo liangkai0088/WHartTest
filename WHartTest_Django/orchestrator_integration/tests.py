@@ -11,12 +11,24 @@ from django.test.utils import override_settings
 
 from . import agent_loop_view
 from .agent_loop_view import (
+    _build_container_reachable_url,
+    _build_test_execution_system_prompt,
     _extract_linked_image_urls,
     _is_linked_image_url_allowed,
     _normalize_uploaded_image_base64_list,
     _prepare_agent_loop_human_message,
 )
+from .agent_review_prompts import render_review_prompt
+from .agent_review_service import (
+    _decide_route,
+    _get_confirmed_issues,
+    normalize_review_mode,
+    normalize_review_thresholds,
+)
 from .builtin_tools.skill_tools import (
+    _build_container_reachable_url as _build_skill_container_reachable_url,
+    _rewrite_local_browser_url,
+    _rewrite_ui_automation_persisted_url,
     _build_skill_artifacts_dir,
     _collect_skill_artifacts,
     _build_skill_screenshots_dir,
@@ -28,6 +40,116 @@ from .builtin_tools.output_sanitizer import strip_terminal_control_sequences
 from .middleware_config import get_user_friendly_llm_error, _model_retry_should_retry
 from projects.models import Project, ProjectMember
 from requirements.models import DocumentImage, RequirementDocument
+
+
+class TestExecutionSystemPromptTests(SimpleTestCase):
+    def test_test_execution_prompt_forces_injected_skill_tools(self):
+        prompt = _build_test_execution_system_prompt(
+            "使用 browser_navigate 工具执行测试。",
+            generate_playwright_script=False,
+        )
+
+        self.assertIn("read_skill_content", prompt)
+        self.assertIn("execute_skill_script", prompt)
+        self.assertIn("playwright-skill", prompt)
+        self.assertIn("禁止因为系统提示词", prompt)
+        self.assertIn("browser_navigate", prompt)
+
+    def test_generate_ui_case_prompt_requires_ui_automation_skill(self):
+        prompt = _build_test_execution_system_prompt(
+            "基础提示词",
+            generate_playwright_script=True,
+        )
+
+        self.assertIn("ui-automation", prompt)
+        self.assertIn("生成 UI 自动化用例规则", prompt)
+        self.assertIn("最终 JSON", prompt)
+
+    def test_project_url_injection(self):
+        """测试项目 URL 动态注入到系统提示词"""
+        prompt = _build_test_execution_system_prompt(
+            "基础提示词",
+            generate_playwright_script=False,
+            project_url="https://test.example.com",
+        )
+
+        self.assertIn("https://test.example.com", prompt)
+        self.assertIn("测试目标 URL", prompt)
+        self.assertIn("忽略 Skill 文档中的示例 URL", prompt)
+
+    def test_no_url_when_project_url_missing(self):
+        """测试未配置项目 URL 时不注入 URL 指令"""
+        prompt = _build_test_execution_system_prompt(
+            "基础提示词",
+            generate_playwright_script=False,
+            project_url=None,
+        )
+
+        self.assertNotIn("测试目标 URL", prompt)
+        self.assertIn("read_skill_content", prompt)
+
+    def test_localhost_project_url_uses_container_reachable_url(self):
+        """测试容器内浏览器访问宿主机 localhost 时自动转换地址"""
+        prompt = _build_test_execution_system_prompt(
+            "基础提示词",
+            generate_playwright_script=False,
+            project_url="http://localhost:8913/",
+        )
+
+        self.assertIn("项目配置地址**：http://localhost:8913/", prompt)
+        self.assertIn("浏览器执行地址**：http://host.docker.internal:8913/", prompt)
+        self.assertIn("容器内访问 `localhost` 指向容器自身", prompt)
+
+    def test_remote_project_url_does_not_rewrite_host(self):
+        """测试远端项目 URL 不被改写为本地地址"""
+        runtime_url = _build_container_reachable_url("https://test.example.com/login")
+
+        self.assertIsNone(runtime_url)
+
+    def test_project_credentials_are_injected_for_login_generation(self):
+        """测试项目登录凭据注入，避免使用 Skill 示例密码"""
+        prompt = _build_test_execution_system_prompt(
+            "基础提示词",
+            generate_playwright_script=True,
+            project_username="admin",
+            project_password="admin123456",
+        )
+
+        self.assertIn("项目登录凭据", prompt)
+        self.assertIn("**用户名**：admin", prompt)
+        self.assertIn("**密码**：admin123456", prompt)
+        self.assertIn("禁止使用 Skill 文档中的示例账号或密码", prompt)
+        self.assertIn("前置交互", prompt)
+        self.assertIn("password123", prompt)
+
+
+class SkillRuntimeUrlRewriteTests(SimpleTestCase):
+    def test_skill_command_rewrites_localhost_project_url(self):
+        command = "node run.js \"await page.goto('http://localhost:8913/login')\""
+
+        rewritten = _rewrite_local_browser_url(command, "http://localhost:8913")
+
+        self.assertIn("http://host.docker.internal:8913/login", rewritten)
+        self.assertNotIn("http://localhost:8913/login", rewritten)
+
+    def test_skill_command_does_not_rewrite_remote_project_url(self):
+        command = "node run.js \"await page.goto('https://test.example.com/login')\""
+
+        rewritten = _rewrite_local_browser_url(command, "https://test.example.com")
+
+        self.assertEqual(rewritten, command)
+        self.assertIsNone(_build_skill_container_reachable_url("https://test.example.com"))
+
+    def test_ui_automation_save_rewrites_runtime_url_to_project_url(self):
+        command = (
+            "python ui_automation_tools.py --action create_ui_page "
+            "--url http://host.docker.internal:8913/login"
+        )
+
+        rewritten = _rewrite_ui_automation_persisted_url(command, "http://localhost:8913/")
+
+        self.assertIn("--url http://localhost:8913/login", rewritten)
+        self.assertNotIn("host.docker.internal", rewritten)
 
 
 class LLMFriendlyErrorTests(SimpleTestCase):
@@ -136,6 +258,91 @@ class UploadedImageNormalizationTests(SimpleTestCase):
         result = _normalize_uploaded_image_base64_list(None, " legacy-img ")
 
         self.assertEqual(result, ["legacy-img"])
+
+
+class AgentReviewPipelineTests(SimpleTestCase):
+    def test_normalize_review_mode_defaults_to_single(self):
+        self.assertEqual(normalize_review_mode(None), "single")
+        self.assertEqual(normalize_review_mode("unknown"), "single")
+        self.assertEqual(normalize_review_mode("multi_review"), "multi_review")
+
+    def test_normalize_review_thresholds_accepts_frontend_aliases(self):
+        thresholds = normalize_review_thresholds(
+            {
+                "quality_threshold": 90,
+                "confidence_threshold": 0.8,
+                "issue_confidence_threshold": 0.6,
+            }
+        )
+
+        self.assertEqual(thresholds["quality_score"], 90)
+        self.assertEqual(thresholds["confidence"], 0.8)
+        self.assertEqual(thresholds["issue_confidence"], 0.6)
+
+    def test_high_confidence_high_issue_routes_to_repair(self):
+        review_results = [
+            {
+                "issues": [
+                    {
+                        "severity": "high",
+                        "confidence": 0.9,
+                        "target": "step-1",
+                    }
+                ]
+            }
+        ]
+        thresholds = normalize_review_thresholds({})
+
+        confirmed = _get_confirmed_issues(
+            review_results,
+            issue_confidence_threshold=thresholds["issue_confidence"],
+        )
+        status, needs_repair, reason = _decide_route(
+            aggregate_score=95,
+            aggregate_confidence=0.9,
+            confirmed_issues=confirmed,
+            thresholds=thresholds,
+        )
+
+        self.assertEqual(status, "repairing")
+        self.assertTrue(needs_repair)
+        self.assertIn("自动路由", reason)
+
+    def test_low_confidence_review_skips_auto_repair(self):
+        thresholds = normalize_review_thresholds({})
+
+        status, needs_repair, reason = _decide_route(
+            aggregate_score=50,
+            aggregate_confidence=0.3,
+            confirmed_issues=[],
+            thresholds=thresholds,
+        )
+
+        self.assertEqual(status, "skipped")
+        self.assertFalse(needs_repair)
+        self.assertIn("置信度", reason)
+
+    def test_passing_review_does_not_route_to_repair(self):
+        thresholds = normalize_review_thresholds({})
+
+        status, needs_repair, reason = _decide_route(
+            aggregate_score=90,
+            aggregate_confidence=0.9,
+            confirmed_issues=[],
+            thresholds=thresholds,
+        )
+
+        self.assertEqual(status, "passed")
+        self.assertFalse(needs_repair)
+        self.assertIn("审查通过", reason)
+
+    def test_review_prompt_contains_strict_json_schema(self):
+        prompt = render_review_prompt("ui_locator", '{"generated_content":"demo"}')
+
+        self.assertIn("严格输出 JSON", prompt)
+        self.assertIn("ui_locator", prompt)
+        self.assertIn("quality_score", prompt)
+        self.assertIn("generated_content", prompt)
 
 
 class AgentLoopRequirementImageMessageTests(TestCase):

@@ -57,13 +57,48 @@ function installPlaywright(skillDir) {
   serverLog('[playwright_persistent_server] Playwright not found. Installing...');
   try {
     execSync('npm install', { stdio: 'inherit', cwd: skillDir });
-    execSync('npx playwright install chromium', { stdio: 'inherit', cwd: skillDir });
+    try {
+      execSync('npx playwright install chromium', { stdio: 'inherit', cwd: skillDir });
+    } catch (browserInstallError) {
+      const browserPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
+      if (!browserPath || !fs.existsSync(browserPath)) {
+        throw browserInstallError;
+      }
+      serverLog('[playwright_persistent_server] Browser install failed, reusing PLAYWRIGHT_BROWSERS_PATH:', browserPath);
+    }
     serverLog('[playwright_persistent_server] Playwright installed successfully');
     return true;
   } catch (e) {
     serverLog('[playwright_persistent_server] Failed to install Playwright:', e?.message || String(e));
     return false;
   }
+}
+
+function getChromiumExecutablePath() {
+  const candidates = [
+    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    process.env.AGENT_BROWSER_EXECUTABLE_PATH,
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function patchChromiumLaunch(chromium) {
+  const executablePath = getChromiumExecutablePath();
+  if (!executablePath || !chromium || chromium.__wharttestLaunchPatched) {
+    return;
+  }
+
+  const originalLaunch = chromium.launch.bind(chromium);
+  chromium.launch = (options = {}) => originalLaunch({
+    ...options,
+    executablePath,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', ...((options && options.args) || [])],
+  });
+  chromium.__wharttestLaunchPatched = true;
 }
 
 function createCapturedConsole() {
@@ -185,6 +220,7 @@ async function main() {
     if (playwright && helpers) return;
     playwright = requireFromSkill('playwright');
     chromium = playwright.chromium;
+    patchChromiumLaunch(chromium);
     firefox = playwright.firefox;
     webkit = playwright.webkit;
     devices = playwright.devices;
@@ -194,7 +230,10 @@ async function main() {
       helpers = {
         launchBrowser: async (type) => {
           const browsers = { chromium, firefox, webkit };
-          return browsers[type || 'chromium'].launch({ headless: false });
+          return browsers[type || 'chromium'].launch({
+            headless: process.env.HEADLESS !== 'false',
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+          });
         },
         getExtraHeadersFromEnv: () => null,
       };

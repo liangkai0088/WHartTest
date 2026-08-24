@@ -91,11 +91,13 @@ services:
       # Celery配置
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CHANNELS_REDIS_URL=redis://redis:6379/1
       # Qdrant向量数据库
       - QDRANT_URL=http://qdrant:6333
       # 内部API基础URL - 使用localhost因为在同一容器
       - DJANGO_BASE_URL=http://localhost:8000
       - WEIXIN_PLUGIN_HOST_URL=http://weixin-plugin-host:3001
+      - WHARTTEST_LOCAL_BROWSER_HOST=${WHARTTEST_LOCAL_BROWSER_HOST:-host.docker.internal}
       - HF_ENDPOINT=${DOCKER_HF_ENDPOINT:-https://huggingface.co}
     depends_on:
       postgres:

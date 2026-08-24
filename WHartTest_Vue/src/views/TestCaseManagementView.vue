@@ -327,26 +327,29 @@ const startAutomationTask = (
   );
 };
 
-const fetchAllModulesForForm = async () => {
+const fetchAllModulesForForm = async (): Promise<boolean> => {
   if (!currentProjectId.value) {
     allModules.value = [];
     moduleTreeForForm.value = [];
-    return;
+    return false;
   }
   try {
     const response = await getTestCaseModules(currentProjectId.value, {}); // 获取所有模块
     if (response.success && response.data) {
       allModules.value = response.data;
       moduleTreeForForm.value = buildModuleTree(response.data);
+      return true;
     } else {
       allModules.value = [];
       moduleTreeForForm.value = [];
       Message.error(response.error || taskText.value.loadModulesFailed);
+      return false;
     }
   } catch (error) {
     Message.error(taskText.value.loadModulesError);
     allModules.value = [];
     moduleTreeForForm.value = [];
+    return false;
   }
 };
 
@@ -485,7 +488,9 @@ const handleViewDetailTestCaseDeleted = () => {
     modulePanelRef.value?.refreshModules();
 };
 
-const showGenerateCasesModal = () => {
+const showGenerateCasesModal = async () => {
+  const loaded = await fetchAllModulesForForm();
+  if (!loaded) return;
   isGenerateCasesModalVisible.value = true;
 };
 
@@ -501,6 +506,7 @@ const handleGenerateCasesSubmit = async (formData: {
   selectedTestCaseIds: number[],
   selectedTestCases: TestCase[],
   testTypes: string[],
+  agentReviewMode?: 'single' | 'multi_review',
 }) => {
   if (!currentProjectId.value) {
     Message.error(taskText.value.invalidProjectId);
@@ -623,6 +629,7 @@ ${formData.selectedModules.length > 0 ? formData.selectedModules.map((mod, idx) 
     use_knowledge_base: ['full', 'title_only'].includes(formData.generateMode)
       ? formData.useKnowledgeBase
       : ['kb_complete', 'kb_generate'].includes(formData.generateMode),
+    agent_review_mode: formData.agentReviewMode || 'single',
   };
 
   // 如果需要知识库，添加知识库ID
@@ -651,7 +658,7 @@ const handleExecuteTestCase = (testCase: TestCase) => {
   isExecuteModalVisible.value = true;
 };
 
-const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean }) => {
+const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean; agentReviewMode?: 'single' | 'multi_review' }) => {
   const testCase = pendingExecuteTestCase.value;
   if (!testCase || !currentProjectId.value) {
     return;
@@ -685,6 +692,7 @@ const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean }) =>
     // Playwright 脚本生成参数
     generate_playwright_script: options.generatePlaywrightScript,
     test_case_id: testCase.id,  // 始终传递，用于截图目录隔离
+    agent_review_mode: options.agentReviewMode || 'single',
   };
 
   const notificationContent = options.generatePlaywrightScript

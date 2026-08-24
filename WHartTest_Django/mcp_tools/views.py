@@ -57,6 +57,19 @@ TOOL_REGISTRY = {
 }
 
 
+def _load_code_analysis_tools():
+    """懒加载 code_analysis 提供的读码工具（避免启动时强依赖）。"""
+    try:
+        from code_analysis.tools import get_code_analysis_tools
+        return get_code_analysis_tools()
+    except Exception as exc:  # pragma: no cover
+        logger.warning("code_analysis tools 加载失败: %s", exc)
+        return {}
+
+
+TOOL_REGISTRY.update(_load_code_analysis_tools())
+
+
 # --- MCP 工具执行入口视图 ---
 class MCPToolRunnerView(APIView):
     """

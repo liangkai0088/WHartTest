@@ -107,7 +107,7 @@ async function refreshToken() {
     if (response.data && response.data.access) {
       // 更新token
       const newToken = response.data.access;
-      // 更新AuthStore中的token
+      authStore.accessToken = newToken;
       localStorage.setItem('auth-accessToken', newToken);
       return newToken;
     } else {
@@ -179,7 +179,7 @@ service.interceptors.response.use(
           error: loginErrorMessage,
         });
       }
-      
+
       // 如果是刷新token的请求失败，直接登出
       if (originalRequest.url?.includes('/token/refresh/')) {
         const authStore = useAuthStore();
@@ -229,7 +229,7 @@ service.interceptors.response.use(
 
       try {
         const newToken = await refreshToken();
-        
+
         if (newToken) {
           // 刷新成功，更新请求头并重试原请求
           isRefreshing = false;

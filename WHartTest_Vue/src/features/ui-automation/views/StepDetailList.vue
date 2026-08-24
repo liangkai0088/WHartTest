@@ -11,7 +11,7 @@
         </a-select>
         <a-select v-model="selectedActuator" :placeholder="stepText.selectActuator" size="small" style="width: 150px" allow-clear>
           <a-option v-for="act in actuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
-            {{ act.name || act.id }}
+            {{ formatActuatorLabel(act) }}
             <a-tag v-if="!act.is_open" size="small" color="gray" style="margin-left: 4px">{{ stepText.offline }}</a-tag>
           </a-option>
         </a-select>
@@ -481,6 +481,8 @@ const stepText = computed(() => isEnglish.value
       default: 'Default',
       selectActuator: 'Select actuator',
       offline: 'Offline',
+      headedBrowser: 'Visible browser',
+      headlessBrowser: 'Headless',
       debugRun: 'Debug Run',
       addAction: 'Add action',
       emptyActions: 'No action steps',
@@ -570,7 +572,9 @@ const stepText = computed(() => isEnglish.value
       optionalDescription: 'Optional description',
       selectActionTypeRequired: 'Select an action type',
       fetchActionStepsFailed: 'Failed to fetch action steps',
-      selectActuatorFirst: 'Please select an actuator first',
+      selectActuatorFirst: 'Please select an online actuator first',
+      actuatorLoadFailed: 'Failed to load actuators. Check login status and backend service.',
+      noActuatorAvailable: 'No actuator is available. Start the local actuator on your Mac first.',
       noActionSteps: 'This page step has no actions',
       websocketFailed: 'WebSocket connection failed. Please refresh and try again',
       sendExecutionFailed: 'Failed to send execution command',
@@ -595,6 +599,8 @@ const stepText = computed(() => isEnglish.value
       default: '默认',
       selectActuator: '选择执行器',
       offline: '离线',
+      headedBrowser: '可见浏览器',
+      headlessBrowser: '无头',
       debugRun: '调试执行',
       addAction: '添加操作',
       emptyActions: '暂无操作步骤',
@@ -684,7 +690,9 @@ const stepText = computed(() => isEnglish.value
       optionalDescription: '可选描述',
       selectActionTypeRequired: '请选择操作类型',
       fetchActionStepsFailed: '获取操作步骤失败',
-      selectActuatorFirst: '请先选择执行器',
+      selectActuatorFirst: '请先选择在线执行器',
+      actuatorLoadFailed: '获取执行器列表失败，请检查登录状态和后端服务',
+      noActuatorAvailable: '没有可用的执行器，请先在本机 Mac 启动执行器服务',
       noActionSteps: '该页面步骤没有操作',
       websocketFailed: 'WebSocket 连接失败，请刷新页面重试',
       sendExecutionFailed: '发送执行命令失败',
@@ -966,6 +974,11 @@ const onElementPageChange = async () => {
   await fetchElementsByPage(selectedElementPage.value)
 }
 
+const formatActuatorLabel = (actuator: ActuatorInfo) => {
+  const mode = actuator.headless ? stepText.value.headlessBrowser : stepText.value.headedBrowser
+  return `${actuator.name || actuator.id} · ${actuator.browser_type} · ${mode}`
+}
+
 const fetchSteps = async () => {
   loading.value = true
   try {
@@ -978,19 +991,43 @@ const fetchSteps = async () => {
   }
 }
 
-const fetchActuators = async () => {
+const fetchActuators = async (showError = false) => {
   try {
     const res = await actuatorApi.list()
     const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
     actuators.value = data?.items ?? []
-    // 自动选择第一个在线的执行器
-    if (!selectedActuator.value && actuators.value.length > 0) {
-      const available = actuators.value.find((a: ActuatorInfo) => a.is_open)
-      if (available) selectedActuator.value = available.id
+    const available = actuators.value.find((a: ActuatorInfo) => a.is_open)
+    const selected = actuators.value.find((a: ActuatorInfo) => a.id === selectedActuator.value && a.is_open)
+    if (!selected) {
+      selectedActuator.value = available?.id
     }
+    return true
   } catch {
-    // 静默失败
+    actuators.value = []
+    selectedActuator.value = ''
+    if (showError) {
+      Message.error(stepText.value.actuatorLoadFailed)
+    }
+    return false
   }
+}
+
+const ensureOnlineActuator = async () => {
+  const loaded = await fetchActuators(true)
+  if (!loaded) return false
+
+  if (!actuators.value.some((a: ActuatorInfo) => a.is_open)) {
+    selectedActuator.value = ''
+    Message.warning(stepText.value.noActuatorAvailable)
+    return false
+  }
+
+  if (!selectedActuator.value) {
+    Message.warning(stepText.value.selectActuatorFirst)
+    return false
+  }
+
+  return true
 }
 
 /** 获取执行环境列表 */
@@ -1020,17 +1057,16 @@ const executePageStep = async () => {
   if (executing.value) {
     return
   }
-  if (!selectedActuator.value) {
-    Message.warning(stepText.value.selectActuatorFirst)
+  if (!await ensureOnlineActuator()) {
     return
   }
   if (stepData.value.length === 0) {
     Message.warning(stepText.value.noActionSteps)
     return
   }
-  
+
   executing.value = true
-  
+
   // 确保 WebSocket 已连接
   if (!uiWebSocket.connected.value) {
     try {
@@ -1041,13 +1077,13 @@ const executePageStep = async () => {
       return
     }
   }
-  
+
   const sent = uiWebSocket.send(UiSocketEnum.PAGE_STEPS, {
     page_step_id: props.pageStep.id,
     env_config_id: selectedEnvConfig.value,
     actuator_id: selectedActuator.value,
   })
-  
+
   if (!sent) {
     Message.error(stepText.value.sendExecutionFailed)
     executing.value = false
@@ -1059,12 +1095,18 @@ const handleStepResult = (data: any) => {
   executing.value = false
   const result = data.data?.func_args
   if (!result) return
-  
+
   if (result.status === 'success') {
     Message.success(stepText.value.executionSuccess(result.passed_steps || 0, result.total_steps || 0))
   } else {
     Message.error(stepText.value.executionFailed(result.message || stepText.value.unknownError))
   }
+}
+
+const handleSocketMessage = (data: any) => {
+  if (data.code === 200 || data.data?.func_name || !executing.value) return
+  executing.value = false
+  Message.error(data.msg || stepText.value.sendExecutionFailed)
 }
 
 const fetchElements = async () => {
@@ -1128,7 +1170,7 @@ const editStep = async (step: UiPageStepsDetailed) => {
   Object.keys(opeParams).forEach(k => delete opeParams[k])
   if (step.ope_value && typeof step.ope_value === 'object') {
     Object.assign(opeParams, step.ope_value)
-    
+
     // 兼容性处理：如果 ope_value 使用 'value' 字段而不是 'text' 字段，进行转换
     if (step.ope_key === 'fill' && step.ope_value.value !== undefined && step.ope_value.text === undefined) {
       // 将 value 字段的内容复制到 text 字段，以兼容前端表单
@@ -1235,13 +1277,13 @@ const buildOpeValue = () => {
       result[k] = v
     }
   }
-  
+
   // 兼容性处理：对于 fill 操作，如果存在 text 字段，也同步到 value 字段
   // 这样后端执行器可以正确识别两种格式
   if (formData.ope_key === 'fill' && result.text !== undefined) {
     result.value = result.text
   }
-  
+
   return Object.keys(result).length > 0 ? result : undefined
 }
 
@@ -1253,7 +1295,7 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
     done(false)
     return
   }
-  
+
   // 额外的业务逻辑校验：对于 fill 操作，必须填写输入内容
   if (formData.ope_key === 'fill') {
     const textValue = opeParams.text
@@ -1349,6 +1391,7 @@ const onDragEnd = async () => {
 
 // WebSocket 事件监听
 let offStepResult: (() => void) | null = null
+let offSocketMessage: (() => void) | null = null
 
 watch(() => props.pageStep, async () => {
   fetchSteps()
@@ -1367,10 +1410,12 @@ onMounted(() => {
   fetchEnvConfigs()
   // 监听页面步骤执行结果
   offStepResult = uiWebSocket.on(UiSocketEnum.PAGE_STEP_RESULT, handleStepResult)
+  offSocketMessage = uiWebSocket.on('*', handleSocketMessage)
 })
 
 onUnmounted(() => {
   offStepResult?.()
+  offSocketMessage?.()
 })
 </script>
 

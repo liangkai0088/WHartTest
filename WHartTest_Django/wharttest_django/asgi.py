@@ -34,6 +34,11 @@ from django.core.asgi import get_asgi_application
 # 导入 WebSocket 路由
 # 导入 UI 自动化模块的 WebSocket 路由清单。
 from ui_automation.routing import websocket_urlpatterns as ui_ws_patterns
+# 导入执行进度看板模块的 WebSocket 路由清单。
+from execution_dashboard.routing import websocket_urlpatterns as exec_dash_ws_patterns
+
+# 合并全部 WebSocket 路由。
+websocket_urlpatterns = ui_ws_patterns + exec_dash_ws_patterns
 
 # 创建 Django HTTP ASGI 应用实例。
 django_asgi_app = get_asgi_application()
@@ -46,8 +51,8 @@ application = ProtocolTypeRouter(
         # WebSocket 请求使用 Channels 处理
         # 对 WebSocket 连接启用主机来源校验。
         "websocket": AllowedHostsOriginValidator(
-            # 使用 UI 自动化路由表匹配并分发 WebSocket 连接。
-            URLRouter(ui_ws_patterns)
+            # 使用合并后的路由表匹配并分发 WebSocket 连接。
+            URLRouter(websocket_urlpatterns)
         ),
     }
 )

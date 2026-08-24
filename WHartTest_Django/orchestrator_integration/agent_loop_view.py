@@ -21,7 +21,7 @@ import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from django.http import StreamingHttpResponse, JsonResponse
@@ -42,11 +42,20 @@ from langchain_core.messages import (
 from langchain.agents import create_agent
 from wharttest_django.checkpointer import get_async_checkpointer
 
+from .agent_review_service import (
+    REVIEW_MODE_MULTI,
+    build_generation_snapshot,
+    complete_review_run,
+    normalize_review_mode,
+    normalize_review_thresholds,
+    run_review_pipeline,
+)
 from .middleware_config import (
     get_middleware_from_config,
     get_user_tool_approvals,
     get_user_friendly_llm_error,
 )
+from .models import AgentReviewRun
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
 from .stop_signal import should_stop, clear_stop_signal
 from langgraph_integration.models import ChatSession, LLMConfig
@@ -70,6 +79,116 @@ from requirements.context_limits import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+TEST_EXECUTION_SKILL_RUNTIME_INSTRUCTION = """
+
+# WHartTest 测试用例执行工具规则（强制）
+
+当前请求是 WHartTest 测试用例执行。真实可用的浏览器/测试工具不是 `browser_*`，而是内置工具：
+- `read_skill_content`
+- `execute_skill_script`
+
+禁止因为系统提示词或历史提示词提到 `browser_navigate`、`browser_snapshot`、`browser_take_screenshot`、`save_operation_screenshots_to_the_application_case` 等未注入工具，就判定工具不可用或 UI 自动化执行器离线。
+
+必须按以下顺序执行：
+1. 调用 `read_skill_content(skill_name="playwright-skill")` 获取浏览器执行说明。
+2. 调用 `execute_skill_script(skill_name="playwright-skill", command=..., session_id="稳定会话ID")` 执行页面访问、验证和截图；截图必须保存到环境变量 `SCREENSHOT_DIR` 指向的目录。
+3. 如果 `playwright-skill` 明确不可用，再调用 `read_skill_content` 检查并切换到 `agent-browser-skill` 或 `playwright-cli`。
+4. 只有 `read_skill_content` 或 `execute_skill_script` 明确返回所有候选 Skill 均不存在/执行失败时，才允许把工具状态记录为不可用。
+5. 执行结束必须输出测试结果 JSON。
+"""
+
+
+GENERATE_UI_AUTOMATION_INSTRUCTION = """
+
+# 生成 UI 自动化用例规则（强制）
+
+本次请求已勾选“生成 UI 用例/生成脚本”。完成测试步骤后必须额外生成并保存 UI 自动化用例：
+1. 调用 `read_skill_content(skill_name="ui-automation")` 获取 UI 自动化保存说明。
+2. 使用本次浏览器执行观察到的元素定位器、操作和断言，通过 `execute_skill_script(skill_name="ui-automation", command="python ui_automation_tools.py ...")` 创建或复用模块、页面、元素、页面步骤和 UI 测试用例。
+3. 保存 UI 页面 URL 时必须使用“项目配置地址/项目测试地址”，不要保存“浏览器执行地址”（如 host.docker.internal）；页面路径可以来自实际访问路径。
+4. 保存页面步骤时必须保留真实浏览器流程中的前置交互，例如先点击“账号登录/打开登录弹窗/展开表单/切换标签”后输入框才出现，就必须把该点击步骤按顺序保存到页面步骤中。
+5. 涉及登录账号、密码或测试数据时必须使用“项目登录凭据/用户明确给出的值/公共变量”，禁止直接复制 Skill 文档中的示例值（如 password123、admin123、example.com）。
+6. 创建前必须先查询已有模块/页面/用例，避免重复创建。
+7. 保存完成后必须调用 `get_testcases` 或 `get_testcase` 验证 UI 自动化用例已经存在。
+8. 最终 JSON 的 `summary` 中必须包含已生成/复用的 UI 自动化用例 ID；如果保存失败，必须把失败原因写入 JSON。
+"""
+
+
+def _build_container_reachable_url(project_url: str | None) -> str | None:
+    """Return a browser URL reachable from the backend container when possible."""
+    if not project_url:
+        return None
+
+    parsed = urlparse(project_url)
+    if parsed.hostname not in {"localhost", "127.0.0.1"}:
+        return None
+
+    replacement_host = os.getenv("WHARTTEST_LOCAL_BROWSER_HOST", "host.docker.internal")
+    netloc = replacement_host
+    if parsed.port:
+        netloc = f"{replacement_host}:{parsed.port}"
+
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def _build_test_execution_system_prompt(
+    base_prompt: str | None,
+    generate_playwright_script: bool = False,
+    project_url: str | None = None,
+    project_username: str | None = None,
+    project_password: str | None = None,
+) -> str:
+    """Build a system prompt that maps test execution to injected Skill tools."""
+    prompt_parts = [base_prompt or ""]
+
+    # 动态注入项目 URL
+    if project_url:
+        runtime_url = _build_container_reachable_url(project_url)
+        if runtime_url:
+            access_instruction = f"""
+
+## 测试目标 URL（本项目配置）
+
+**项目配置地址**：{project_url}
+**浏览器执行地址**：{runtime_url}
+
+当前浏览器运行在后端容器内，容器内访问 `localhost` 指向容器自身，不是宿主机前端服务。
+执行页面访问时必须使用“浏览器执行地址”；测试报告中可同时记录项目配置地址。
+所有测试步骤（如"打开登录页"、"访问需求管理页"）均应以“浏览器执行地址”作为 base URL。
+忽略 Skill 文档中的示例 URL（如 http://192.168.150.114:8913/ 或 http://example.com），使用上述本项目配置地址转换后的真实地址。
+"""
+        else:
+            access_instruction = f"""
+
+## 测试目标 URL（本项目配置）
+
+**项目测试地址**：{project_url}
+
+所有测试步骤（如"打开登录页"、"访问需求管理页"）均应使用此地址作为 base URL。
+忽略 Skill 文档中的示例 URL（如 http://192.168.150.114:8913/ 或 http://example.com），使用上述项目配置的真实地址。
+"""
+        prompt_parts.append(access_instruction)
+
+    if project_username or project_password:
+        credential_lines = [
+            "\n## 项目登录凭据（本项目配置）\n",
+            "如测试步骤需要登录，必须优先使用以下项目配置凭据；禁止使用 Skill 文档中的示例账号或密码。",
+        ]
+        if project_username:
+            credential_lines.append(f"**用户名**：{project_username}")
+        if project_password:
+            credential_lines.append(f"**密码**：{project_password}")
+        credential_lines.append(
+            "生成 UI 自动化用例时，登录相关 fill 步骤也必须保存这些配置值或对应公共变量。"
+        )
+        prompt_parts.append("\n".join(credential_lines))
+
+    prompt_parts.append(TEST_EXECUTION_SKILL_RUNTIME_INSTRUCTION)
+    if generate_playwright_script:
+        prompt_parts.extend([PLAYWRIGHT_SCRIPT_INSTRUCTION, GENERATE_UI_AUTOMATION_INSTRUCTION])
+    return "\n".join(part for part in prompt_parts if part)
 
 
 def _build_sse_error_event(exc: Exception) -> Dict[str, Any]:
@@ -853,6 +972,11 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        agent_review_mode: str = "single",
+        agent_review_options: Optional[Dict[str, Any]] = None,
+        project_url: Optional[str] = None,
+        project_username: Optional[str] = None,
+        project_password: Optional[str] = None,
     ):
         """
         创建 SSE 流式生成器（LangChain v1 重构版）
@@ -862,6 +986,8 @@ class AgentLoopStreamAPIView(View):
         """
         thread_id = f"{request.user.id}_{project_id}_{session_id}"
         file_ids = file_ids or []
+        agent_review_mode = normalize_review_mode(agent_review_mode)
+        review_thresholds = normalize_review_thresholds(agent_review_options)
         try:
             attached_files = await sync_to_async(validate_file_ids)(file_ids, project, request.user)
             llm_attachment_context = await sync_to_async(build_llm_attachment_context)(attached_files)
@@ -980,6 +1106,7 @@ class AgentLoopStreamAPIView(View):
                 project_id=int(project_id),
                 test_case_id=test_case_id,
                 chat_session_id=session_id,
+                project_url=project_url,
             )
             tools.extend(builtin_tools)
             logger.info(f"AgentLoopStreamAPI: Added {len(builtin_tools)} builtin tools")
@@ -1018,12 +1145,19 @@ class AgentLoopStreamAPIView(View):
                 request.user, prompt_id, project
             )
 
-            # 8.1 如果需要生成脚本，追加脚本生成指令
-            if generate_playwright_script:
-                effective_prompt = (
-                    effective_prompt or ""
-                ) + PLAYWRIGHT_SCRIPT_INSTRUCTION
-                logger.info(f"AgentLoopStreamAPI: 已追加脚本生成指令")
+            # 8.1 测试用例执行必须在系统提示词层面映射到真实注入的 Skill 工具。
+            if test_case_id:
+                effective_prompt = _build_test_execution_system_prompt(
+                    effective_prompt,
+                    generate_playwright_script=generate_playwright_script,
+                    project_url=project_url,
+                    project_username=project_username,
+                    project_password=project_password,
+                )
+                logger.info("AgentLoopStreamAPI: 已追加测试执行 Skill 工具规则")
+            elif generate_playwright_script:
+                effective_prompt = (effective_prompt or "") + PLAYWRIGHT_SCRIPT_INSTRUCTION
+                logger.info("AgentLoopStreamAPI: 已追加脚本生成指令")
 
             # 9. 构建用户消息（支持多模态：上传图片 + HTTP(S) 图片 + 需求文档图片）
             user_message_for_llm = user_message
@@ -1105,6 +1239,11 @@ class AgentLoopStreamAPIView(View):
                 current_tool_calls = []
                 interrupt_detected = False
                 user_stopped = False
+                final_content_parts: List[str] = []
+                tool_results_for_review: List[Dict[str, Any]] = []
+                review_complete_payload = None
+                repair_content_parts: List[str] = []
+                current_agent_phase = "generation"
 
                 # 15. 流式执行
                 stream_modes = ["updates", "messages"]
@@ -1293,6 +1432,7 @@ class AgentLoopStreamAPIView(View):
                                                         "step": step_count,
                                                         "max_steps": self.MAX_STEPS,
                                                         "tools": tool_names_in_step,
+                                                        "phase": current_agent_phase,
                                                     }
                                                 )
                                                 logger.info(
@@ -1318,21 +1458,24 @@ class AgentLoopStreamAPIView(View):
                                                     process_mcp_tool_output(content)
                                                 )
 
-                                                yield create_sse_data(
-                                                    {
-                                                        "type": "tool_result",
-                                                        "tool_name": tool_name,
-                                                        "tool_output": content,
-                                                        "summary": summary,
-                                                        "step": step_count,
-                                                    }
-                                                )
+                                                tool_result_event = {
+                                                    "type": "tool_result",
+                                                    "tool_name": tool_name,
+                                                    "tool_output": content,
+                                                    "summary": summary,
+                                                    "step": step_count,
+                                                    "phase": current_agent_phase,
+                                                }
+                                                if current_agent_phase == "generation":
+                                                    tool_results_for_review.append(tool_result_event)
+                                                yield create_sse_data(tool_result_event)
                                         # 步骤完成
                                         if step_count > 0:
                                             yield create_sse_data(
                                                 {
                                                     "type": "step_complete",
                                                     "step": step_count,
+                                                    "phase": current_agent_phase,
                                                 }
                                             )
 
@@ -1346,16 +1489,24 @@ class AgentLoopStreamAPIView(View):
                                     # 检查是否是 ToolMessage（通过类名或 type 属性）
                                     token_type = type(token).__name__
                                     if "ToolMessage" not in token_type:
+                                        if current_agent_phase == "generation":
+                                            final_content_parts.append(str(token.content))
+                                        else:
+                                            repair_content_parts.append(str(token.content))
                                         yield create_sse_data(
-                                            {"type": "stream", "data": token.content}
+                                            {"type": "stream", "data": token.content, "phase": current_agent_phase}
                                         )
                             elif hasattr(chunk, "content") and chunk.content:
                                 # 兼容旧版本可能直接返回 message 的情况
                                 # 同样过滤掉 ToolMessage
                                 chunk_type = type(chunk).__name__
                                 if "ToolMessage" not in chunk_type:
+                                    if current_agent_phase == "generation":
+                                        final_content_parts.append(str(chunk.content))
+                                    else:
+                                        repair_content_parts.append(str(chunk.content))
                                     yield create_sse_data(
-                                        {"type": "stream", "data": chunk.content}
+                                        {"type": "stream", "data": chunk.content, "phase": current_agent_phase}
                                     )
 
                 except Exception as e:
@@ -1463,7 +1614,146 @@ class AgentLoopStreamAPIView(View):
                         "AgentLoopStreamAPI: Interrupt detected, returning early"
                     )
                 else:
+                    if agent_review_mode == REVIEW_MODE_MULTI:
+                        generation_snapshot = build_generation_snapshot(
+                            user_message=user_message,
+                            generated_content="".join(final_content_parts),
+                            tool_results=tool_results_for_review,
+                            project_id=project_id,
+                            session_id=session_id,
+                            test_case_id=test_case_id,
+                            generate_playwright_script=generate_playwright_script,
+                        )
+                        review_run = await sync_to_async(AgentReviewRun.objects.create)(
+                            user=request.user,
+                            project=project,
+                            chat_session=chat_session,
+                            session_id=session_id,
+                            thread_id=thread_id,
+                            test_case_id=test_case_id,
+                            mode=agent_review_mode,
+                            status="reviewing",
+                            thresholds=review_thresholds,
+                            generation_snapshot=generation_snapshot,
+                        )
+                        yield create_sse_data(
+                            {
+                                "type": "review_start",
+                                "review_run_id": review_run.id,
+                                "reviewers": ["ui_locator", "assertion_logic", "boundary_scenario"],
+                            }
+                        )
+                        try:
+                            review_result = await run_review_pipeline(
+                                llm=llm,
+                                review_run=review_run,
+                                generation_snapshot=generation_snapshot,
+                                thresholds=review_thresholds,
+                            )
+                            yield create_sse_data(
+                                {"type": "review_result", **review_result.to_event_payload()}
+                            )
+                            yield create_sse_data(
+                                {
+                                    "type": "review_route",
+                                    "status": review_result.status,
+                                    "needs_repair": review_result.needs_repair,
+                                    "route_reason": review_result.route_reason,
+                                    "review_run_id": review_run.id,
+                                }
+                            )
+
+                            if review_result.needs_repair and review_result.repair_prompt:
+                                current_agent_phase = "repair"
+                                yield create_sse_data(
+                                    {
+                                        "type": "repair_start",
+                                        "review_run_id": review_run.id,
+                                        "message": "审查发现高置信度问题，正在自动修复",
+                                    }
+                                )
+                                repair_input = {"messages": [HumanMessage(content=review_result.repair_prompt)]}
+                                async for repair_stream_mode, repair_chunk in agent.astream(
+                                    repair_input,
+                                    config=invoke_config,
+                                    stream_mode=["messages"],
+                                ):
+                                    if should_stop(session_id):
+                                        user_stopped = True
+                                        clear_stop_signal(session_id)
+                                        break
+                                    if repair_stream_mode != "messages":
+                                        continue
+                                    repair_token = repair_chunk[0] if isinstance(repair_chunk, tuple) and repair_chunk else repair_chunk
+                                    if not hasattr(repair_token, "content") or not repair_token.content:
+                                        continue
+                                    if "ToolMessage" in type(repair_token).__name__:
+                                        continue
+                                    repair_content_parts.append(str(repair_token.content))
+                                    yield create_sse_data(
+                                        {
+                                            "type": "stream",
+                                            "data": repair_token.content,
+                                            "phase": current_agent_phase,
+                                        }
+                                    )
+                                repair_result_text = "".join(repair_content_parts)
+                                final_status = "failed" if user_stopped else "repaired"
+                                await sync_to_async(complete_review_run)(
+                                    review_run,
+                                    status=final_status,
+                                    repair_result=repair_result_text,
+                                )
+                                review_complete_payload = {
+                                    **review_result.to_complete_payload(),
+                                    "status": final_status,
+                                    "needs_repair": final_status != "repaired",
+                                }
+                                yield create_sse_data(
+                                    {
+                                        "type": "repair_complete",
+                                        "status": final_status,
+                                        "review_run_id": review_run.id,
+                                    }
+                                )
+                            else:
+                                await sync_to_async(complete_review_run)(
+                                    review_run,
+                                    status=review_result.status,
+                                )
+                                review_complete_payload = review_result.to_complete_payload()
+                        except Exception as review_error:
+                            logger.error(
+                                "AgentLoopStreamAPI: Review pipeline failed. session_id=%s, error=%s",
+                                session_id,
+                                review_error,
+                                exc_info=True,
+                            )
+                            await sync_to_async(complete_review_run)(
+                                review_run,
+                                status="failed",
+                                error_message=str(review_error),
+                            )
+                            review_complete_payload = {
+                                "mode": REVIEW_MODE_MULTI,
+                                "status": "failed",
+                                "review_run_id": review_run.id,
+                                "needs_repair": False,
+                                "route_reason": str(review_error),
+                            }
+                            yield create_sse_data(
+                                {
+                                    "type": "review_result",
+                                    "mode": REVIEW_MODE_MULTI,
+                                    "status": "failed",
+                                    "review_run_id": review_run.id,
+                                    "route_reason": str(review_error),
+                                }
+                            )
+
                     complete_data = {"type": "complete", "total_steps": step_count}
+                    if review_complete_payload:
+                        complete_data["review_pipeline"] = review_complete_payload
                     if generate_playwright_script:
                         complete_data["script_generation"] = {
                             "enabled": True,
@@ -1545,6 +1835,8 @@ class AgentLoopStreamAPIView(View):
         generate_playwright_script = body_data.get("generate_playwright_script", False)
         test_case_id = body_data.get("test_case_id")  # 用于关联生成的脚本
         use_pytest = body_data.get("use_pytest", True)  # 生成 pytest 格式还是简单格式
+        agent_review_mode = normalize_review_mode(body_data.get("agent_review_mode"))
+        agent_review_options = body_data.get("agent_review_options", {})
 
         # 兜底：如果前端没传 test_case_id，尝试从消息中解析
         if not test_case_id and user_message:
@@ -1574,6 +1866,27 @@ class AgentLoopStreamAPIView(View):
         )
         if not project:
             return api_error_response("Project access denied", 403)
+
+        # 4.1 获取项目测试 URL 和登录凭据（从项目凭据读取）
+        project_url = None
+        project_username = None
+        project_password = None
+        if test_case_id:
+            try:
+                from projects.models import ProjectCredential
+                credential = await sync_to_async(
+                    lambda: ProjectCredential.objects.filter(project=project).first()
+                )()
+                if credential:
+                    project_url = credential.system_url or None
+                    project_username = credential.username or None
+                    project_password = credential.password or None
+                if project_url:
+                    logger.info(f"AgentLoopStreamAPI: 项目测试 URL: {project_url}")
+                if project_username:
+                    logger.info("AgentLoopStreamAPI: 已加载项目登录用户名")
+            except Exception as e:
+                logger.warning(f"AgentLoopStreamAPI: 获取项目凭据失败: {e}")
 
         # 5. 生成 session_id
         if not session_id:
@@ -1605,6 +1918,11 @@ class AgentLoopStreamAPIView(View):
                     test_case_id,
                     use_pytest,
                     file_ids,
+                    agent_review_mode,
+                    agent_review_options,
+                    project_url,
+                    project_username,
+                    project_password,
                 ):
                     yield chunk
 
@@ -1630,6 +1948,11 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                agent_review_mode,
+                agent_review_options,
+                project_url,
+                project_username,
+                project_password,
             )
 
     async def _handle_non_stream_request(
@@ -1647,6 +1970,11 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        agent_review_mode: str = "single",
+        agent_review_options: Optional[Dict[str, Any]] = None,
+        project_url: Optional[str] = None,
+        project_username: Optional[str] = None,
+        project_password: Optional[str] = None,
     ) -> JsonResponse:
         """
         处理非流式请求，收集所有流式事件后返回统一 JSON 响应
@@ -1662,6 +1990,7 @@ class AgentLoopStreamAPIView(View):
         error_details = None
         interrupt_info = None
         script_generation = None
+        review_pipeline = None
 
         try:
             async for chunk in self._create_stream_generator(
@@ -1678,6 +2007,11 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                agent_review_mode,
+                agent_review_options,
+                project_url,
+                project_username,
+                project_password,
             ):
                 # 解析 SSE 数据
                 if isinstance(chunk, str) and chunk.startswith("data: "):
@@ -1719,6 +2053,8 @@ class AgentLoopStreamAPIView(View):
                         elif event_type == "complete":
                             if event.get("script_generation"):
                                 script_generation = event.get("script_generation")
+                            if event.get("review_pipeline"):
+                                review_pipeline = event.get("review_pipeline")
                     except json.JSONDecodeError:
                         continue
 
@@ -1742,6 +2078,9 @@ class AgentLoopStreamAPIView(View):
 
             if script_generation:
                 response_data["script_generation"] = script_generation
+
+            if review_pipeline:
+                response_data["review_pipeline"] = review_pipeline
 
             return api_success_response("Chat completed", response_data)
 

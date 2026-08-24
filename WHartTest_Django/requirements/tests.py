@@ -438,6 +438,7 @@ class RequirementDocumentImageAccessTests(TestCase):
             username="image-viewer",
             password="password123",
         )
+        self.user.user_permissions.add(Permission.objects.get(codename="view_requirementdocument"))
         self.project = Project.objects.create(
             name="Image Access Project",
             creator=self.user,
@@ -479,6 +480,7 @@ class RequirementDocumentImageAccessTests(TestCase):
             ),
         )
 
+        self.client.force_authenticate(user=self.user)
         url = reverse(
             "requirement-documents-get-image",
             kwargs={"pk": self.document.id, "image_id": "img_000"},
@@ -487,3 +489,30 @@ class RequirementDocumentImageAccessTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(b"".join(response.streaming_content), b"new")
+
+    def test_get_image_requires_project_membership(self):
+        other_user = User.objects.create_user(
+            username="not-a-member",
+            password="password123",
+        )
+        DocumentImage.objects.create(
+            document=self.document,
+            image_id="img_000",
+            order=0,
+            content_type="image/png",
+            file_size=3,
+            image_file=SimpleUploadedFile(
+                "image.png",
+                b"private",
+                content_type="image/png",
+            ),
+        )
+
+        self.client.force_authenticate(user=other_user)
+        url = reverse(
+            "requirement-documents-get-image",
+            kwargs={"pk": self.document.id, "image_id": "img_000"},
+        )
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 403)

@@ -59,6 +59,7 @@ interface StreamState {
     }>;
   };
   isWaitingForApproval?: boolean; // 是否正在等待用户审批
+  reviewPipeline?: AgentReviewPipelineSummary; // 多 Agent 审查摘要
 }
 
 // Agent Loop SSE 事件类型定义（供文档和类型参考）
@@ -197,6 +198,16 @@ export async function sendChatMessage(
 /**
  * Agent Loop 非流式响应数据类型
  */
+export interface AgentReviewPipelineSummary {
+  mode: 'multi_review';
+  status: 'passed' | 'repairing' | 'repaired' | 'failed' | 'skipped';
+  quality_score?: number;
+  confidence?: number;
+  needs_repair: boolean;
+  review_run_id: number;
+  route_reason?: string;
+}
+
 export interface AgentLoopNonStreamResponse {
   session_id: string;
   session_title?: string;
@@ -205,6 +216,7 @@ export interface AgentLoopNonStreamResponse {
   tool_results: Array<{ summary: string; step: number; tool_output?: unknown; tool_name?: string }>;
   context_token_count: number;
   context_limit: number;
+  review_pipeline?: AgentReviewPipelineSummary;
   interrupt?: {
     interrupt_id: string;
     action_requests: Array<{
@@ -463,32 +475,32 @@ export async function sendChatMessageStream(
     let buffer = '';
     while (true) {
       const { done, value } = await reader.read();
-      
+
       if (done) {
         // 流结束时，处理buffer中剩余的数据
         if (buffer.trim()) {
           const remainingLines = buffer.split('\n');
           for (const line of remainingLines) {
             if (line.trim() === '' || !line.startsWith('data: ')) continue;
-            
+
             const jsonData = line.slice(6);
             if (jsonData === '[DONE]') continue;
-            
+
             try {
               const parsed = JSON.parse(jsonData);
-              
+
               // 处理上下文Token更新事件
               if (parsed.type === 'context_update' && streamSessionId) {
                 const tokenCount = parsed.context_token_count ?? 0;
                 const limit = parsed.context_limit ?? 128000;
                 latestContextUsage.value[streamSessionId] = { tokenCount, limit };
-                
+
                 if (activeStreams.value[streamSessionId]) {
                   activeStreams.value[streamSessionId].contextTokenCount = tokenCount;
                   activeStreams.value[streamSessionId].contextLimit = limit;
                 }
               }
-              
+
               if (parsed.type === 'complete' && streamSessionId && activeStreams.value[streamSessionId]) {
                 activeStreams.value[streamSessionId].isComplete = true;
               }
@@ -497,12 +509,12 @@ export async function sendChatMessageStream(
             }
           }
         }
-        
+
         // ⚠️ 流结束但未收到 complete/[DONE] 事件 = 异常中断
         // 不自动设置 isComplete，让前端保持加载状态直到用户手动刷新
         // 这避免了网络波动导致停止按钮过早消失的问题
         // HITL: 如果正在等待审批，不设置错误状态
-        if (streamSessionId && activeStreams.value[streamSessionId] && 
+        if (streamSessionId && activeStreams.value[streamSessionId] &&
             !activeStreams.value[streamSessionId].isComplete &&
             !activeStreams.value[streamSessionId].isWaitingForApproval) {
             console.warn('[ChatService] Stream ended without complete event, possible network interruption');
@@ -519,7 +531,7 @@ export async function sendChatMessageStream(
 
       for (const line of lines) {
         if (line.trim() === '' || !line.startsWith('data: ')) continue;
-        
+
         const jsonData = line.slice(6);
         if (jsonData === '[DONE]') {
             if (streamSessionId && activeStreams.value[streamSessionId]) {
@@ -570,10 +582,10 @@ export async function sendChatMessageStream(
           if (parsed.type === 'context_update' && streamSessionId) {
             const tokenCount = parsed.context_token_count ?? 0;
             const limit = parsed.context_limit ?? 128000;
-            
+
             // 总是更新独立缓存（优先保证缓存被更新）
             latestContextUsage.value[streamSessionId] = { tokenCount, limit };
-            
+
             // 如果活跃流还存在，也更新它
             if (activeStreams.value[streamSessionId]) {
               activeStreams.value[streamSessionId].contextTokenCount = tokenCount;
@@ -664,11 +676,11 @@ export async function sendChatMessageStream(
                 try {
                   // 提取工具消息内容
                   const contentMatch = updateData.match(/content='([^']*(?:\\'[^']*)*)'/);
-                  
+
                   if (contentMatch) {
                     const toolContent = contentMatch[1].replace(/\\'/g, "'").replace(/\\n/g, '\n');
                     const time = formatStreamTime();
-                    
+
                     // 如果当前有AI流式内容,先将其固化为独立消息
                     if (activeStreams.value[streamSessionId].content && activeStreams.value[streamSessionId].content.trim()) {
                       activeStreams.value[streamSessionId].messages.push({
@@ -679,7 +691,7 @@ export async function sendChatMessageStream(
                       });
                       activeStreams.value[streamSessionId].content = '';
                     }
-                    
+
                     // 添加工具消息作为新的独立消息
                     activeStreams.value[streamSessionId].messages.push({
                       content: toolContent,
@@ -717,6 +729,35 @@ export async function sendChatMessageStream(
             }
           }
 
+          // 处理多 Agent 审查阶段事件
+          if (['review_start', 'review_result', 'review_route', 'repair_start', 'repair_complete'].includes(parsed.type) && streamSessionId && activeStreams.value[streamSessionId]) {
+            const time = formatStreamTime();
+            const eventMessages: Record<string, string> = {
+              review_start: '多 Agent 审查已开始：UI 定位、断言逻辑、边界场景并行审查中。',
+              review_result: `审查完成：质量分 ${parsed.quality_score ?? '-'}，置信度 ${parsed.confidence ?? '-'}。`,
+              review_route: parsed.route_reason || '审查路由已完成。',
+              repair_start: parsed.message || '审查发现问题，修复 Agent 已开始处理。',
+              repair_complete: parsed.status === 'repaired' ? '修复 Agent 已完成自动修复。' : '修复 Agent 处理结束。'
+            };
+            activeStreams.value[streamSessionId].messages.push({
+              content: eventMessages[parsed.type] || '多 Agent 审查状态更新',
+              type: 'system',
+              time,
+              isExpanded: false
+            });
+            if (parsed.type === 'review_result' && parsed.review_run_id) {
+              activeStreams.value[streamSessionId].reviewPipeline = {
+                mode: 'multi_review',
+                status: parsed.status || 'failed',
+                quality_score: parsed.quality_score,
+                confidence: parsed.confidence,
+                needs_repair: !!parsed.needs_repair,
+                review_run_id: parsed.review_run_id,
+                route_reason: parsed.route_reason
+              };
+            }
+          }
+
           // ⭐ 处理 HITL 中断事件
           if (parsed.type === 'interrupt' && streamSessionId && activeStreams.value[streamSessionId]) {
             console.log('[ChatService] Interrupt event received:', parsed);
@@ -732,12 +773,16 @@ export async function sendChatMessageStream(
             // ✅ 修复：标记完成，保持content不变（Vue组件会从content读取最终消息）
             // 不清空content，因为displayedMessages和watch都依赖stream.content来显示最终AI回复
             activeStreams.value[streamSessionId].isComplete = true;
-            
+
             // ⭐ 保存任务 ID
             if (parsed.task_id) {
               activeStreams.value[streamSessionId].taskId = parsed.task_id;
             }
-            
+
+            if (parsed.review_pipeline) {
+              activeStreams.value[streamSessionId].reviewPipeline = parsed.review_pipeline;
+            }
+
             // ⭐ 处理脚本生成信息
             if (parsed.script_generation && parsed.script_generation.available) {
               activeStreams.value[streamSessionId].scriptGeneration = {

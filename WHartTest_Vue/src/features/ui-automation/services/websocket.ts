@@ -61,20 +61,27 @@ class UiWebSocketService {
   private reconnectAttempts = 0
   private maxReconnectAttempts = 5
   private reconnectDelay = 3000
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private shouldReconnect = false
   private handlers: Map<string, MessageHandler[]> = new Map()
-  
+
   public connected = ref(false)
   public error = shallowRef<Error | null>(null)
-  
+
   /** 获取 WebSocket URL */
   private getWsUrl(): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = import.meta.env.VITE_WS_HOST || window.location.host
     const url = new URL(`${protocol}//${host}/ws/ui/web/`)
+    const authStore = useAuthStore()
+    const token = authStore.getAccessToken
     url.searchParams.set('lang', getCurrentServerLanguage())
+    if (token) {
+      url.searchParams.set('token', token)
+    }
     return url.toString()
   }
-  
+
   /** 连接 WebSocket */
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -82,12 +89,15 @@ class UiWebSocketService {
         resolve()
         return
       }
-      
+
       const url = this.getWsUrl()
-      console.log('[WebSocket] Connecting to:', url)
-      
+      const logUrl = new URL(url)
+      logUrl.searchParams.delete('token')
+      console.log('[WebSocket] Connecting to:', logUrl.toString())
+      this.shouldReconnect = true
+
       this.ws = new WebSocket(url)
-      
+
       this.ws.onopen = () => {
         console.log('[WebSocket] Connected')
         this.connected.value = true
@@ -95,68 +105,80 @@ class UiWebSocketService {
         this.reconnectAttempts = 0
         resolve()
       }
-      
+
       this.ws.onclose = (event) => {
         console.log('[WebSocket] Disconnected:', event.code, event.reason)
         this.connected.value = false
+        this.notifyLifecycleError(event.reason || 'WebSocket disconnected')
         this.attemptReconnect()
       }
-      
+
       this.ws.onerror = (event) => {
         console.error('[WebSocket] Error:', event)
         this.error.value = new Error('WebSocket connection error')
+        this.notifyLifecycleError(this.error.value.message)
         reject(this.error.value)
       }
-      
+
       this.ws.onmessage = (event) => {
         this.handleMessage(event.data)
       }
     })
   }
-  
+
   /** 处理收到的消息 */
   private handleMessage(rawData: string) {
     try {
       const data: SocketDataModel = JSON.parse(rawData)
       console.log('[WebSocket] Received:', data)
-      
-      // 根据 func_name 触发对应的处理函数
+
+      const allHandlers = this.handlers.get('*') || []
+      allHandlers.forEach(handler => handler(data))
+
       const funcName = data.data?.func_name
       if (funcName) {
         const handlers = this.handlers.get(funcName) || []
         handlers.forEach(handler => handler(data))
       }
-      
-      // 触发通用消息处理
-      const allHandlers = this.handlers.get('*') || []
-      allHandlers.forEach(handler => handler(data))
     } catch (e) {
       console.error('[WebSocket] Failed to parse message:', e)
     }
   }
-  
+
+  private notifyLifecycleError(message: string) {
+    const handlers = this.handlers.get('*') || []
+    handlers.forEach(handler => handler({
+      code: 500,
+      msg: message,
+      is_notice: 1,
+    }))
+  }
+
   /** 重连逻辑 */
   private attemptReconnect() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[WebSocket] Max reconnect attempts reached')
+    if (!this.shouldReconnect || this.reconnectAttempts >= this.maxReconnectAttempts) {
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.error('[WebSocket] Max reconnect attempts reached')
+      }
       return
     }
-    
+
     this.reconnectAttempts++
     console.log(`[WebSocket] Reconnecting... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`)
-    
-    setTimeout(() => {
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
       this.connect().catch(console.error)
     }, this.reconnectDelay)
   }
-  
+
   /** 发送消息 */
   send(funcName: string, funcArgs: Record<string, any>) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.error('[WebSocket] Not connected')
       return false
     }
-    
+
     const message: SocketDataModel = {
       code: 200,
       msg: 'request',
@@ -166,12 +188,12 @@ class UiWebSocketService {
         func_args: funcArgs,
       }
     }
-    
+
     console.log('[WebSocket] Sending:', message)
     this.ws.send(JSON.stringify(message))
     return true
   }
-  
+
   /** 注册消息处理函数 */
   on(funcName: string, handler: MessageHandler) {
     if (!this.handlers.has(funcName)) {
@@ -180,7 +202,7 @@ class UiWebSocketService {
     this.handlers.get(funcName)!.push(handler)
     return () => this.off(funcName, handler)
   }
-  
+
   /** 移除消息处理函数 */
   off(funcName: string, handler: MessageHandler) {
     const handlers = this.handlers.get(funcName)
@@ -189,22 +211,28 @@ class UiWebSocketService {
       if (idx > -1) handlers.splice(idx, 1)
     }
   }
-  
+
   /** 断开连接 */
   disconnect() {
+    this.shouldReconnect = false
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     if (this.ws) {
+      this.ws.onclose = null
       this.ws.close()
       this.ws = null
     }
     this.connected.value = false
   }
-  
+
   /** 执行测试用例 */
   runTestCase(caseId: number, envConfigId?: number, actuatorId?: string): boolean {
     // 从auth store获取当前用户信息
     const authStore = useAuthStore()
     const currentUser = authStore.currentUser
-    
+
     return this.send(UiSocketEnum.TEST_CASE, {
       case_id: caseId,
       env_config_id: envConfigId,
@@ -213,13 +241,13 @@ class UiWebSocketService {
       executor_name: currentUser?.username,
     })
   }
-  
+
   /** 批量执行测试用例 */
   runTestCases(caseIds: number[], envConfigId?: number, actuatorId?: string): boolean {
     // 从auth store获取当前用户信息
     const authStore = useAuthStore()
     const currentUser = authStore.currentUser
-    
+
     return this.send(UiSocketEnum.TEST_CASE_BATCH, {
       case_ids: caseIds,
       env_config_id: envConfigId,
@@ -228,13 +256,13 @@ class UiWebSocketService {
       executor_name: currentUser?.username,
     })
   }
-  
+
   /** 执行页面步骤 */
   runPageSteps(pageStepId: number, envConfigId?: number, actuatorId?: string): boolean {
     // 从auth store获取当前用户信息
     const authStore = useAuthStore()
     const currentUser = authStore.currentUser
-    
+
     return this.send(UiSocketEnum.PAGE_STEPS, {
       page_step_id: pageStepId,
       env_config_id: envConfigId,
@@ -243,7 +271,7 @@ class UiWebSocketService {
       executor_name: currentUser?.username,
     })
   }
-  
+
   /** 停止执行 */
   stopExecution(taskId?: string): boolean {
     return this.send(UiSocketEnum.STOP_EXECUTION, {

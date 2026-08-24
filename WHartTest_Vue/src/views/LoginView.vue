@@ -91,6 +91,7 @@
               <input
                 ref="usernameInputRef"
                 v-model="username"
+                name="username"
                 type="text"
                 required
                 autocomplete="username"
@@ -105,6 +106,7 @@
               </svg>
               <input
                 v-model="password"
+                name="password"
                 :type="showPassword ? 'text' : 'password'"
                 required
                 autocomplete="current-password"
@@ -175,7 +177,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useStarryBackground } from '@/composables/useStarryBackground'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useAuthStore } from '@/store/authStore'
@@ -205,6 +207,7 @@ const isBlack = computed(() => themeStore.isBlack)
 const toggleTheme = () => themeStore.toggleTheme()
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const { isEnglish, t } = useAppI18n()
 const isLoading = computed(() => authStore.getIsLoading)
@@ -264,6 +267,17 @@ const loginSuccessMessage = computed(() => (
   isEnglish.value ? 'Signed in successfully!' : '登录成功！'
 ))
 
+const getRedirectTarget = () => {
+  if (typeof route.query.redirect === 'string' && route.query.redirect) {
+    return route.query.redirect
+  }
+
+  const redirect = new URLSearchParams(window.location.search).get('redirect')
+  return redirect || null
+}
+
+const getPostLoginTarget = () => getRedirectTarget() || { name: 'Dashboard' }
+
 const focusableSelector = [
   'button:not([disabled])',
   'input:not([disabled])',
@@ -286,7 +300,10 @@ const handleFingerprintAssetError = () => {
 }
 
 const openLoginDialog = async () => {
-  previousFocusedElement.value = document.activeElement instanceof HTMLElement ? document.activeElement : launcherButtonRef.value
+  const activeElement = document.activeElement
+  previousFocusedElement.value = activeElement instanceof HTMLElement && activeElement !== document.body
+    ? activeElement
+    : launcherButtonRef.value
   loginDialogVisible.value = true
   await focusUsernameInput()
 }
@@ -351,7 +368,7 @@ const handleLogin = async () => {
       localStorage.removeItem('rememberedUsername')
     }
     loginDialogVisible.value = false
-    await router.push({ name: 'Dashboard' })
+    await router.push(getPostLoginTarget())
   }
 }
 
@@ -365,15 +382,19 @@ watch(loginDialogVisible, (visible) => {
   document.body.style.overflow = previousBodyOverflow.value
 })
 
-onMounted(() => {
+onMounted(async () => {
   authStore.checkAuthStatus()
   if (authStore.isLoggedIn) {
-    router.push({ name: 'Dashboard' })
+    await router.push(getPostLoginTarget())
+    return
   }
   const saved = localStorage.getItem('rememberedUsername')
   if (saved) {
     username.value = saved
     rememberMe.value = true
+  }
+  if (route.query.redirect) {
+    await openLoginDialog()
   }
 })
 

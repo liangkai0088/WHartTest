@@ -177,6 +177,12 @@ urlpatterns = [
     path("api/weixin/", include("weixin_integration.urls")),
     # 挂载操作日志路由。
     path("api/operation-logs/", include("operation_logs.urls")),
+    # 挂载执行进度看板路由。
+    path("api/", include("execution_dashboard.urls")),
+    # 挂载源码级 AI 智能分析路由。
+    path("api/", include("code_analysis.urls")),
+    # 挂载 Web QA 智能测试路由。
+    path("api/", include("web_qa.urls")),
     # 挂载 OpenAPI schema 接口。
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     # 挂载 Swagger UI。

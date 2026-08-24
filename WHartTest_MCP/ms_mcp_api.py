@@ -45,8 +45,8 @@ class ApiClient:
         import os
 
         self.api_host = os.getenv("MS_API_HOST", "http://ms.example.com")
-        self.access_key = os.getenv("MS_ACCESS_KEY", "your_access_key")
-        self.secret_key = os.getenv("MS_SECRET_KEY", "your_secret_key_16")
+        self.access_key = os.getenv("MS_ACCESS_KEY", "0123456789abcdef")
+        self.secret_key = os.getenv("MS_SECRET_KEY", "0123456789abcdef")
         self.session = requests.Session()
         self._update_headers()
 

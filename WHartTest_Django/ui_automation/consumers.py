@@ -13,6 +13,10 @@ from typing import Optional
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
+from django.contrib.auth.models import AnonymousUser
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
 from .socket_models import (
     SocketDataModel, QueueModel, NoticeType, ResponseCode,
@@ -25,32 +29,39 @@ logger = logging.getLogger('ui_automation')
 
 class SocketUserManager:
     """WebSocket用户管理器"""
-    
+
     _web_users: dict[str, 'UiAutomationConsumer'] = {}      # 前端用户连接
     _actuator_users: dict[str, 'UiAutomationConsumer'] = {} # 执行器连接
-    
+
     @classmethod
     def add_web_user(cls, user_id: str, consumer: 'UiAutomationConsumer'):
         cls._web_users[user_id] = consumer
         logger.info(f"Web用户连接: {user_id}, 当前连接数: {len(cls._web_users)}")
-    
+
     @classmethod
     def remove_web_user(cls, user_id: str):
         if user_id in cls._web_users:
             del cls._web_users[user_id]
             logger.info(f"Web用户断开: {user_id}, 当前连接数: {len(cls._web_users)}")
-    
+
     @classmethod
-    def add_actuator(cls, actuator_id: str, consumer: 'UiAutomationConsumer'):
+    def add_actuator(cls, actuator_id: str, consumer: 'UiAutomationConsumer', user=None) -> bool:
+        existing = cls._actuator_users.get(actuator_id)
+        if existing is not None and existing is not consumer and not getattr(user, 'is_staff', False):
+            return False
         cls._actuator_users[actuator_id] = consumer
         logger.info(f"执行器连接: {actuator_id}, 当前执行器数: {len(cls._actuator_users)}")
-    
+        return True
+
     @classmethod
-    def remove_actuator(cls, actuator_id: str):
-        if actuator_id in cls._actuator_users:
-            del cls._actuator_users[actuator_id]
-            logger.info(f"执行器断开: {actuator_id}, 当前执行器数: {len(cls._actuator_users)}")
-    
+    def remove_actuator(cls, actuator_id: str, consumer: Optional['UiAutomationConsumer'] = None):
+        if actuator_id not in cls._actuator_users:
+            return
+        if consumer is not None and cls._actuator_users.get(actuator_id) is not consumer:
+            return
+        del cls._actuator_users[actuator_id]
+        logger.info(f"执行器断开: {actuator_id}, 当前执行器数: {len(cls._actuator_users)}")
+
     @classmethod
     def get_actuator(cls, actuator_id: Optional[str] = None) -> Optional['UiAutomationConsumer']:
         """获取执行器，如果不指定则返回第一个可用的"""
@@ -59,28 +70,28 @@ class SocketUserManager:
         if cls._actuator_users:
             return list(cls._actuator_users.values())[0]
         return None
-    
+
     @classmethod
     def get_actuator_by_id(cls, actuator_id: str) -> Optional['UiAutomationConsumer']:
         """根据ID获取指定执行器"""
         return cls._actuator_users.get(actuator_id)
-    
+
     @classmethod
     def get_web_user(cls, user_id: str) -> Optional['UiAutomationConsumer']:
         return cls._web_users.get(user_id)
-    
+
     @classmethod
     def has_actuator(cls) -> bool:
         return bool(cls._actuator_users)
-    
+
     @classmethod
     def get_actuator_count(cls) -> int:
         return len(cls._actuator_users)
-    
+
     @classmethod
     def get_all_actuators(cls) -> list['UiAutomationConsumer']:
         return list(cls._actuator_users.values())
-    
+
     @classmethod
     def get_actuator_info(cls, actuator_id: str) -> dict:
         """获取执行器详细信息"""
@@ -92,7 +103,7 @@ class SocketUserManager:
 
 class UiAutomationConsumer(AsyncWebsocketConsumer):
     """UI自动化WebSocket消费者"""
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.user_id: Optional[str] = None
@@ -111,7 +122,26 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
     def _localize(self, message: str) -> str:
         return translate_app_text(message, self.language)
-    
+
+    @sync_to_async
+    def _authenticate_token(self, token: str):
+        try:
+            jwt_auth = JWTAuthentication()
+            validated_token = jwt_auth.get_validated_token(token)
+            return jwt_auth.get_user(validated_token)
+        except (AuthenticationFailed, InvalidToken, TokenError):
+            return AnonymousUser()
+
+    async def _get_authenticated_user(self, query_params):
+        user = self.scope.get('user') or AnonymousUser()
+        if getattr(user, 'is_authenticated', False):
+            return user
+
+        token = query_params.get('token', [None])[0]
+        if not token:
+            return AnonymousUser()
+        return await self._authenticate_token(token)
+
     async def connect(self):
         """建立连接"""
         import datetime
@@ -122,14 +152,20 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         # 获取客户端IP
         client = self.scope.get('client', ['unknown', 0])
         client_ip = client[0] if client else 'unknown'
-        
+
+        user = await self._get_authenticated_user(query_params)
+        if not getattr(user, 'is_authenticated', False):
+            await self.close(code=4401)
+            return
+        self.scope['user'] = user
+
         # 根据路径判断是前端还是执行器
         if '/actuator/' in path:
             self.is_actuator = True
             self.user_id = query_params.get('id', [None])[0] or query_params.get('user_id', [None])[0]
             if not self.user_id:
                 self.user_id = f"actuator_{id(self)}"
-            
+
             # 初始化执行器信息
             self.actuator_info = {
                 'id': self.user_id,
@@ -142,53 +178,50 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 'headless': False,
                 'connected_at': datetime.datetime.now().isoformat(),
             }
-            SocketUserManager.add_actuator(self.user_id, self)
+            if not SocketUserManager.add_actuator(self.user_id, self, user):
+                await self.close(code=4409)
+                return
         else:
             self.is_actuator = False
-            # 从用户认证获取ID
-            user = self.scope.get('user')
-            if user and hasattr(user, 'username'):
-                self.user_id = user.username
-            else:
-                self.user_id = f"web_{id(self)}"
+            self.user_id = user.username
             SocketUserManager.add_web_user(self.user_id, self)
-        
+
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
-        
+
         # 发送连接成功消息
         await self.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg=self._localize(f"{'执行器' if self.is_actuator else 'Web客户端'}连接成功"),
             user=self.user_id
         ))
-        
+
         logger.info(f"{'执行器' if self.is_actuator else 'Web'}连接: {self.user_id}")
-    
+
     async def disconnect(self, close_code):
         """断开连接"""
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
-        
+
         if self.is_actuator:
-            SocketUserManager.remove_actuator(self.user_id)
+            SocketUserManager.remove_actuator(self.user_id, self)
         else:
             SocketUserManager.remove_web_user(self.user_id)
-        
+
         logger.info(f"{'执行器' if self.is_actuator else 'Web'}断开: {self.user_id}, code: {close_code}")
-    
+
     async def receive(self, text_data=None, bytes_data=None):
         """接收消息"""
         if not text_data:
             return
-        
+
         try:
             data = json.loads(text_data)
             socket_data = SocketDataModel(**data)
-            
+
             # 如果有func_name，进行路由处理
             if socket_data.data and socket_data.data.func_name:
                 await self.route_message(socket_data)
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"JSON解析错误: {e}")
             await self.send_json(SocketDataModel(
@@ -201,12 +234,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 code=ResponseCode.ERROR,
                 msg=self._localize(f"处理错误: {str(e)}")
             ))
-    
+
     async def route_message(self, socket_data: SocketDataModel):
         """路由消息到对应处理器"""
         func_name = socket_data.data.func_name
         func_args = socket_data.data.func_args
-        
+
         # 前端发送的执行请求 -> 转发给执行器
         if self.is_actuator:
             # 执行器返回的结果 -> 转发给前端
@@ -224,7 +257,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.TEST_CASE_BATCH: self.handle_execute_batch,
                 UiSocketEnum.STOP_EXECUTION: self.handle_stop_execution,
             }
-        
+
         handler = handler_map.get(func_name)
         if handler:
             await handler(func_args, socket_data.user)
@@ -234,7 +267,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 code=ResponseCode.ERROR,
                 msg=self._localize(f"未知的操作: {func_name}")
             ))
-    
+
     async def handle_execute_page_steps(self, args: dict, user: str):
         """处理执行页面步骤请求"""
         actuator_id = args.get('actuator_id')
@@ -242,14 +275,14 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             actuator = SocketUserManager.get_actuator_by_id(actuator_id)
         else:
             actuator = SocketUserManager.get_actuator()
-        
+
         if not actuator:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
                 msg=self._localize("没有可用的执行器，请先启动执行器服务" if not actuator_id else f"执行器 {actuator_id} 不在线")
             ))
             return
-        
+
         # 转发给执行器，使用服务端分配的user_id而非客户端传入的user
         await actuator.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
@@ -261,12 +294,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 func_args=args
             )
         ))
-        
+
         await self.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg=self._localize("任务已发送给执行器")
         ))
-    
+
     async def handle_execute_test_case(self, args: dict, user: str):
         """处理执行测试用例请求"""
         actuator_id = args.get('actuator_id')
@@ -280,12 +313,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 msg=self._localize("没有可用的执行器，请先启动执行器服务" if not actuator_id else f"执行器 {actuator_id} 不在线")
             ))
             return
-        
+
         # 更新用例状态为执行中
         case_id = args.get('case_id')
         if case_id:
             await self.update_testcase_status(case_id, 1)  # 1 = 执行中
-        
+
         # 转发给执行器，使用服务端分配的user_id而非客户端传入的user
         await actuator.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
@@ -297,12 +330,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 func_args=args
             )
         ))
-        
+
         await self.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg=self._localize("任务已发送给执行器")
         ))
-    
+
     async def handle_execute_batch(self, args: dict, user: str):
         """处理批量执行请求"""
         actuator_id = args.get('actuator_id')
@@ -357,7 +390,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 func_args={'batch_id': batch_id, 'total_cases': len(case_ids)}
             )
         ))
-    
+
     async def handle_stop_execution(self, args: dict, user: str):
         """处理停止执行请求"""
         # 广播给所有执行器
@@ -372,16 +405,16 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                     func_args=args
                 )
             ))
-        
+
         await self.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg=self._localize("停止信号已发送")
         ))
-    
+
     async def handle_step_result(self, args: dict, user: str):
         """处理步骤执行结果（来自执行器）"""
         logger.info(f"收到步骤结果, 目标用户: {user}, 当前Web用户: {list(SocketUserManager._web_users.keys())}")
-        
+
         # 转发给对应的前端用户
         web_user = SocketUserManager.get_web_user(user)
         if web_user:
@@ -398,7 +431,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             logger.info(f"步骤结果已发送给用户: {user}")
         else:
             logger.warning(f"找不到Web用户: {user}")
-        
+
         # 同时广播给所有前端（用于多人协作）
         await self.channel_layer.group_send(
             self.group_name,
@@ -410,7 +443,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 }
             }
         )
-    
+
     async def handle_page_step_result(self, args: dict, user: str):
         """处理页面步骤执行结果（来自执行器）"""
         logger.info(f"收到页面步骤结果, 执行用户: {user}")
@@ -434,14 +467,14 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 }
             }
         )
-    
+
     async def handle_case_result(self, args: dict, user: str):
         """处理用例执行结果（来自执行器）"""
         logger.info(f"收到用例结果, 执行用户: {user}")
-        
+
         # 保存执行结果到数据库
         await self.save_execution_result(args)
-        
+
         # 广播给所有前端（避免重复发送）
         await self.channel_layer.group_send(
             self.group_name,
@@ -454,7 +487,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 }
             }
         )
-    
+
     async def broadcast_result(self, event):
         """广播结果给所有前端"""
         if not self.is_actuator:
@@ -467,7 +500,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                     func_args=event['data']['args']
                 )
             ))
-    
+
     @sync_to_async
     def update_testcase_status(self, case_id: int, status: int):
         """更新测试用例状态"""
@@ -490,7 +523,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             logger.info(f"页面步骤状态更新: page_step_id={page_step_id}, status={status}")
         except Exception as e:
             logger.error(f"更新页面步骤状态失败: {e}")
-    
+
     @sync_to_async
     def save_execution_result(self, args: dict):
         """保存执行结果到数据库"""
@@ -521,7 +554,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
         # 提取 batch_id
         batch_id = args.get('batch_id')
-        
+
         # 提取执行人信息
         executor_id = args.get('executor_id')
         executor = None
@@ -595,12 +628,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.error(f"创建批量执行记录失败: {e}", exc_info=True)
             return None
-    
+
     async def handle_set_actuator_info(self, args: dict, user: str):
         """处理执行器信息更新（仅执行器可调用）"""
         if not self.is_actuator:
             return
-        
+
         # 更新执行器信息
         if 'name' in args:
             self.actuator_info['name'] = args['name']
@@ -616,31 +649,31 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             self.actuator_info['headless'] = args['headless']
         if 'version' in args:
             self.actuator_info['version'] = args['version']
-        
+
         logger.info(f"执行器 {self.user_id} 信息已更新: {self.actuator_info}")
-        
+
         await self.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg="执行器信息已更新"
         ))
-    
+
     async def send_json(self, data: SocketDataModel):
         """发送JSON消息"""
         await self.send(text_data=data.model_dump_json())
-    
+
     @classmethod
     async def send_to_actuator(cls, task: ExecutionTaskModel, user: str) -> bool:
         """发送任务给执行器（供视图调用）"""
         actuator = SocketUserManager.get_actuator()
         if not actuator:
             return False
-        
+
         func_name = UiSocketEnum.TEST_CASE
         if task.task_type == 'page_steps':
             func_name = UiSocketEnum.PAGE_STEPS
         elif task.task_type == 'batch':
             func_name = UiSocketEnum.TEST_CASE_BATCH
-        
+
         await actuator.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg="execute",
