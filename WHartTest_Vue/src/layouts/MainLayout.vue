@@ -171,6 +171,21 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/ui-automation')">{{ automationMenuLabel }}</a>
           </a-menu-item>
 
+          <a-menu-item key="perf-test" v-if="hasPerfTestPermission">
+            <template #icon><icon-experiment /></template>
+            <a href="#" @click="checkProjectAndNavigate($event, '/perf-test')">{{ perfTestMenuLabel }}</a>
+          </a-menu-item>
+
+          <a-menu-item key="code-coverage" v-if="hasCodeCoveragePermission">
+            <template #icon><icon-file /></template>
+            <a href="#" @click="checkProjectAndNavigate($event, '/code-coverage')">{{ codeCoverageMenuLabel }}</a>
+          </a-menu-item>
+
+          <a-menu-item key="ui-self-healing" v-if="hasSelfHealingPermission">
+            <template #icon><icon-safe /></template>
+            <a href="#" @click="checkProjectAndNavigate($event, '/ui-automation/self-healing')">{{ selfHealingMenuLabel }}</a>
+          </a-menu-item>
+
           <a-menu-item key="task-center" v-if="hasTaskCenterPermission">
             <template #icon><icon-schedule /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/task-center')">{{ tasksMenuLabel }}</a>
@@ -371,6 +386,9 @@ const projectsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Projects' 
 const requirementsMenuLabel = computed(() => (locale.value === 'en-US' ? 'Requirements' : tl('需求管理')));
 const apiTestingMenuLabel = computed(() => (locale.value === 'en-US' ? 'API Testing' : tl('接口自动化')));
 const automationMenuLabel = computed(() => (locale.value === 'en-US' ? 'Automation' : tl('UI自动化')));
+const perfTestMenuLabel = computed(() => (locale.value === 'en-US' ? 'Load Testing' : tl('性能测试')));
+const codeCoverageMenuLabel = computed(() => (locale.value === 'en-US' ? 'Code Coverage' : tl('代码覆盖率')));
+const selfHealingMenuLabel = computed(() => (locale.value === 'en-US' ? 'Self-Healing' : tl('自愈记录')));
 const tasksMenuLabel = computed(() => (locale.value === 'en-US' ? 'Tasks' : tl('任务中心')));
 const fileManagementMenuLabel = computed(() => (locale.value === 'en-US' ? 'Files' : tl('文件管理')));
 const knowledgeMenuLabel = computed(() => (locale.value === 'en-US' ? 'RAG' : tl('知识库管理')));
@@ -432,7 +450,10 @@ const activeMenu = computed(() => {
   if (path.startsWith('/projects')) return 'projects';
   if (path.startsWith('/requirements')) return 'requirements'; // 添加对需求管理路由的识别
   if (path.startsWith('/api-testing')) return 'api-testing';
+  if (path.startsWith('/ui-automation/self-healing')) return 'ui-self-healing';
   if (path.startsWith('/ui-automation')) return 'ui-automation';
+  if (path.startsWith('/perf-test')) return 'perf-test';
+  if (path.startsWith('/code-coverage')) return 'code-coverage';
   if (path.startsWith('/testsuites')) return 'testsuites'; // 添加对测试套件路由的识别
   if (path.startsWith('/test-executions')) return 'test-executions'; // 添加对执行历史路由的识别
   if (path.startsWith('/testcases')) return 'testcases';
@@ -508,6 +529,21 @@ const hasFileManagementPermission = computed(() => {
   return authStore.currentUser?.is_staff ||
          authStore.hasPermission('file_management.view_fileasset') ||
          authStore.hasPermission('file_management.add_fileasset');
+});
+
+const hasPerfTestPermission = computed(() => {
+  return authStore.currentUser?.is_staff ||
+         authStore.hasPermission('perf_test.view_perftestscenario');
+});
+
+const hasCodeCoveragePermission = computed(() => {
+  return authStore.currentUser?.is_staff ||
+         authStore.hasPermission('code_coverage.view_coveragereport');
+});
+
+const hasSelfHealingPermission = computed(() => {
+  return authStore.currentUser?.is_staff ||
+         authStore.hasPermission('ui_automation.view_uiselfhealingrecord');
 });
 
 const hasUsersPermission = computed(() => {

@@ -236,6 +236,21 @@ const routes: Array<RouteRecordRaw> = [ // 声明路由表数组，类型约束�
         component: FileManagementView,
       },
       {
+        path: 'perf-test', // 性能测试
+        name: 'PerfTest',
+        component: () => import('@/features/perf-test/views/PerfTestView.vue'),
+      },
+      {
+        path: 'code-coverage', // 代码覆盖率
+        name: 'CodeCoverage',
+        component: () => import('@/features/code-coverage/views/CodeCoverageView.vue'),
+      },
+      {
+        path: 'ui-automation/self-healing', // UI 自愈记录
+        name: 'SelfHealing',
+        component: () => import('@/features/ui-automation/views/SelfHealingView.vue'),
+      },
+      {
         path: 'operation-logs', // 定义操作日志路径。
         name: 'OperationLogs', // 定义操作日志路由名称。
         component: () => import('../views/OperationLogView.vue'), // 动态导入操作日志页面。

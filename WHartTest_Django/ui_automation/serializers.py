@@ -10,7 +10,7 @@ from file_management.models import FileReference
 from .models import (
     UiModule, UiPage, UiElement, UiPageSteps, UiPageStepsDetailed,
     UiTestCase, UiCaseStepsDetailed, UiExecutionRecord, UiPublicData, UiEnvironmentConfig,
-    UiBatchExecutionRecord
+    UiBatchExecutionRecord, UiSelfHealingRecord
 )
 
 
@@ -361,6 +361,22 @@ class UiPublicDataSerializer(serializers.ModelSerializer):
         model = UiPublicData
         fields = '__all__'
         read_only_fields = ['creator', 'created_at', 'updated_at']
+
+
+class UiSelfHealingRecordSerializer(serializers.ModelSerializer):
+    """UI 自愈记录序列化器（只读，供前端查看诊断/回写/重跑结果）"""
+    test_case_name = serializers.CharField(source='test_case.name', read_only=True)
+    element_name = serializers.CharField(source='element.name', read_only=True)
+
+    class Meta:
+        model = UiSelfHealingRecord
+        fields = [
+            'id', 'execution_record', 'test_case', 'test_case_name',
+            'element', 'element_name', 'step_id', 'failure_message',
+            'status', 'diagnosis', 'fix_summary', 'rerun_batch_id',
+            'rerun_success', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['created_at', 'updated_at']
 
 
 class UiEnvironmentConfigSerializer(serializers.ModelSerializer):

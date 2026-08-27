@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.db.models.deletion import ProtectedError
+from django.db.models import Count, Q
 from django.db import transaction
 from copy import deepcopy
 from file_management.services import maybe_cleanup_unreferenced_files, sync_file_references
@@ -14,7 +15,7 @@ from file_management.services import maybe_cleanup_unreferenced_files, sync_file
 from .models import (
     UiModule, UiPage, UiElement, UiPageSteps, UiPageStepsDetailed,
     UiTestCase, UiCaseStepsDetailed, UiExecutionRecord, UiPublicData, UiEnvironmentConfig,
-    UiBatchExecutionRecord
+    UiBatchExecutionRecord, UiSelfHealingRecord
 )
 from file_management.models import FileReference
 from .serializers import (
@@ -23,7 +24,8 @@ from .serializers import (
     UiPageStepsDetailedSerializer, UiTestCaseSerializer, UiTestCaseListSerializer, UiTestCaseDetailSerializer,
     UiCaseStepsDetailedSerializer, UiExecutionRecordSerializer, UiExecutionRecordListSerializer,
     UiPublicDataSerializer, UiEnvironmentConfigSerializer, UiTestCaseExecuteSerializer,
-    UiPageStepsExecuteSerializer, UiBatchExecutionRecordSerializer, UiBatchExecutionRecordDetailSerializer
+    UiPageStepsExecuteSerializer, UiBatchExecutionRecordSerializer, UiBatchExecutionRecordDetailSerializer,
+    UiSelfHealingRecordSerializer
 )
 
 
@@ -1152,3 +1154,39 @@ def trigger_batch_execution(request):
         'status': 'success',
         'data': {'batch_id': batch.id, 'total_cases': len(case_ids)},
     })
+
+
+class UiSelfHealingRecordViewSet(viewsets.ReadOnlyModelViewSet):
+    """UI 自愈记录只读视图：提供自愈记录列表与成功率统计"""
+    queryset = UiSelfHealingRecord.objects.select_related('test_case', 'element')
+    serializer_class = UiSelfHealingRecordSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'test_case', 'rerun_success']
+    search_fields = ['failure_message', 'test_case__name', 'element__name']
+    ordering_fields = ['created_at', 'updated_at', 'id']
+    ordering = ['-created_at']
+
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """自愈成功率统计"""
+        status_counts = {
+            'pending': 0, 'diagnosing': 0, 'healed': 0, 'failed': 0, 'ignored': 0,
+        }
+        for status_value, count in UiSelfHealingRecord.objects.values_list('status').annotate(count=Count('id')):
+            status_counts[status_value] = count
+
+        resolved = status_counts['healed'] + status_counts['failed']
+        success_rate = round(status_counts['healed'] / resolved * 100, 1) if resolved else 0
+
+        rerun_agg = UiSelfHealingRecord.objects.aggregate(
+            rerun_total=Count('id', filter=Q(rerun_success__isnull=False)),
+            rerun_success=Count('id', filter=Q(rerun_success=True)),
+        )
+
+        return Response({
+            'total': sum(status_counts.values()),
+            'status_counts': status_counts,
+            'success_rate': success_rate,
+            'rerun_total': rerun_agg['rerun_total'],
+            'rerun_success': rerun_agg['rerun_success'],
+        })
