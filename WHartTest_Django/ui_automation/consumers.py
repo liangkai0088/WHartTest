@@ -577,12 +577,17 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 except UiBatchExecutionRecord.DoesNotExist:
                     logger.warning(f"批量执行记录不存在: batch_id={batch_id}")
 
-                # 回填自愈重跑结果
+                # 回填自愈重跑结果，并尝试触发下一轮自愈循环
                 try:
                     from .models import UiSelfHealingRecord
-                    UiSelfHealingRecord.objects.filter(
+                    from .self_healing import schedule_retry_if_failed
+                    healings = UiSelfHealingRecord.objects.filter(
                         rerun_batch_id=batch_id, rerun_success__isnull=True
-                    ).update(rerun_success=(status == 2))
+                    )
+                    for healing in healings:
+                        healing.rerun_success = (status == 2)
+                        healing.save(update_fields=['rerun_success'])
+                        schedule_retry_if_failed(healing.id)
                 except Exception:
                     logger.warning(f"回填自愈重跑结果失败 batch_id={batch_id}", exc_info=True)
         except Exception as e:

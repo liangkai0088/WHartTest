@@ -71,6 +71,9 @@
                 <a-progress :percent="record.progress || 0" size="mini" />
               </template>
             </a-table-column>
+            <a-table-column :title="tl('节点')" data-index="node_name" :width="120">
+              <template #cell="{ record }">{{ record.node_name || tl('后端本地') }}</template>
+            </a-table-column>
             <a-table-column :title="tl('执行人')" data-index="executed_by_name" :width="110" />
             <a-table-column :title="tl('创建时间')" data-index="created_at" :width="170" />
             <a-table-column :title="tl('操作')" :width="160" fixed="right">
@@ -175,6 +178,16 @@
             <span v-else>-</span>
           </a-descriptions-item>
         </a-descriptions>
+        <a-form layout="vertical" class="node-form">
+          <a-form-item :label="tl('目标施压节点')">
+            <a-space>
+              <a-select v-model="selectedNodeId" allow-clear :placeholder="tl('默认后端本地执行')" style="width: 280px">
+                <a-option v-for="n in onlineNodes" :key="n.id" :value="n.id">{{ n.name }} ({{ n.host }})</a-option>
+              </a-select>
+              <a-button size="small" type="primary" :loading="nodeSaving" @click="savePlanNode">{{ tl('保存节点') }}</a-button>
+            </a-space>
+          </a-form-item>
+        </a-form>
         <h4 class="subsection-title">{{ tl('请求列表') }}</h4>
         <a-table :data="currentScenario.requests" row-key="id" :pagination="false" size="small">
           <template #columns>
@@ -251,7 +264,7 @@ import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { extractPaginationData, extractResponseData } from '@/features/ui-automation/types'
 import EChart from '../components/EChart.vue'
-import { perfScenarioApi, perfReportApi, perfExecutionApi, perfNodeApi } from '../api'
+import { perfScenarioApi, perfReportApi, perfExecutionApi, perfNodeApi, perfPlanApi } from '../api'
 import { perfWebSocket } from '../services/websocket'
 import type {
   PerfTestScenario, PerfTestExecution, PerfTestReport, PerfRealtimeUpdate, PerfScenarioTemplate, PerfTestNode,
@@ -392,6 +405,9 @@ const submitAiOrchestrate = async () => {
 // 场景详情
 const detailVisible = ref(false)
 const currentScenario = ref<PerfTestScenario | null>(null)
+const selectedNodeId = ref<number | undefined>(undefined)
+const nodeSaving = ref(false)
+const onlineNodes = computed(() => nodes.value.filter((n) => n.status === 'online'))
 const openDetail = async (record: PerfTestScenario) => {
   try {
     const res = await perfScenarioApi.get(record.id)
@@ -399,7 +415,31 @@ const openDetail = async (record: PerfTestScenario) => {
   } catch {
     currentScenario.value = record
   }
+  selectedNodeId.value = currentScenario.value?.plan?.node ?? undefined
   detailVisible.value = true
+}
+const savePlanNode = async () => {
+  if (!currentScenario.value) return
+  nodeSaving.value = true
+  try {
+    const scenario = currentScenario.value
+    if (scenario.plan) {
+      await perfPlanApi.update(scenario.plan.id, { node: selectedNodeId.value ?? null })
+    } else {
+      await perfPlanApi.create({
+        scenario: scenario.id,
+        users: 10, spawn_rate: 1, duration: 60, think_time: 0,
+        node: selectedNodeId.value ?? null,
+      })
+    }
+    Message.success(tl('节点已更新'))
+    const res = await perfScenarioApi.get(scenario.id)
+    currentScenario.value = extractResponseData<PerfTestScenario>(res)
+  } catch {
+    Message.error(tl('保存节点失败'))
+  } finally {
+    nodeSaving.value = false
+  }
 }
 
 // 脚本预览

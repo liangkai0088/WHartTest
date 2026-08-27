@@ -24,6 +24,8 @@ export interface UiSelfHealingRecord {
   } | Record<string, any>
   rerun_batch_id: number | null
   rerun_success: boolean | null
+  retry_count: number
+  max_retry: number
   created_at: string
   updated_at: string
 }

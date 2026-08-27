@@ -531,6 +531,8 @@ class UiSelfHealingRecord(models.Model):
     fix_summary = models.JSONField(_('回写摘要'), default=dict, blank=True)
     rerun_batch_id = models.IntegerField(_('重跑批次 ID'), null=True, blank=True)
     rerun_success = models.BooleanField(_('重跑是否成功'), null=True, blank=True)
+    retry_count = models.IntegerField(_('已重试次数'), default=0)
+    max_retry = models.IntegerField(_('最大自愈重试次数'), default=0)
     created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
     updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
 

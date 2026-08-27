@@ -117,6 +117,15 @@ class PerfTestPlan(models.Model):
         _('目标 QPS'), null=True, blank=True,
         help_text='可选，预留字段，限流在后续版本增强',
     )
+    node = models.ForeignKey(
+        'PerfTestNode',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='perf_test_plans',
+        verbose_name=_('目标施压节点'),
+        help_text='可选，指定本次压测绑定的节点；为空则使用后端本地执行',
+    )
 
     created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
     updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
@@ -147,6 +156,15 @@ class PerfTestExecution(models.Model):
         verbose_name=_('所属场景'),
     )
     plan_snapshot = models.JSONField(_('负载参数快照'), default=dict, blank=True)
+    node = models.ForeignKey(
+        'PerfTestNode',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='perf_test_executions',
+        verbose_name=_('执行节点'),
+        help_text='记录本次压测实际绑定的节点',
+    )
     status = models.CharField(
         _('状态'), max_length=20, choices=STATUS_CHOICES, default='pending'
     )

@@ -29,6 +29,9 @@
             </a-tag>
           </template>
         </a-table-column>
+        <a-table-column :title="tl('重试')" :width="90">
+          <template #cell="{ record }">{{ record.retry_count }} / {{ record.max_retry }}</template>
+        </a-table-column>
         <a-table-column :title="tl('创建时间')" data-index="created_at" :width="170" />
         <a-table-column :title="tl('操作')" :width="100" fixed="right">
           <template #cell="{ record }">

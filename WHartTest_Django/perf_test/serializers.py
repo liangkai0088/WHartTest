@@ -21,11 +21,13 @@ class PerfTestRequestSerializer(serializers.ModelSerializer):
 
 
 class PerfTestPlanSerializer(serializers.ModelSerializer):
+    node_name = serializers.CharField(source='node.name', read_only=True, allow_null=True)
+
     class Meta:
         model = PerfTestPlan
         fields = [
             'id', 'scenario', 'users', 'spawn_rate', 'duration',
-            'think_time', 'target_qps', 'created_at', 'updated_at',
+            'think_time', 'target_qps', 'node', 'node_name', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -59,6 +61,7 @@ class PerfTestScenarioSerializer(serializers.ModelSerializer):
 class PerfTestExecutionSerializer(serializers.ModelSerializer):
     scenario_name = serializers.CharField(source='scenario.name', read_only=True)
     executed_by_name = serializers.CharField(source='executed_by.username', read_only=True)
+    node_name = serializers.CharField(source='node.name', read_only=True, allow_null=True)
     report_id = serializers.SerializerMethodField()
 
     class Meta:
@@ -66,12 +69,13 @@ class PerfTestExecutionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'scenario', 'scenario_name', 'plan_snapshot', 'status',
             'progress', 'celery_task_id', 'error_message', 'started_at',
-            'finished_at', 'executed_by', 'executed_by_name', 'report_id',
-            'created_at',
+            'finished_at', 'executed_by', 'executed_by_name', 'node', 'node_name',
+            'report_id', 'created_at',
         ]
         read_only_fields = [
             'id', 'plan_snapshot', 'status', 'progress', 'celery_task_id',
-            'error_message', 'started_at', 'finished_at', 'executed_by', 'created_at',
+            'error_message', 'started_at', 'finished_at', 'executed_by', 'node',
+            'created_at',
         ]
 
     def get_report_id(self, obj):

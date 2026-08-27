@@ -30,6 +30,9 @@ def run_perf_test(execution_id):
     execution = PerfTestExecution.objects.get(id=execution_id)
     try:
         ctx = _load_execution_context(execution)
+        if ctx.get('node'):
+            execution.node = ctx['node']
+            execution.save(update_fields=['node'])
         workdir = _prepare_workdir(execution_id, ctx['locustfile'])
         cmd = _build_command(
             workdir, ctx['host'], ctx['users'], ctx['spawn_rate'], ctx['duration']
@@ -72,6 +75,7 @@ def _load_execution_context(execution):
         'spawn_rate': plan.spawn_rate if plan else snapshot.get('spawn_rate', 1),
         'duration': plan.duration if plan else snapshot.get('duration', 60),
         'host': infer_host(requests),
+        'node': plan.node if plan else None,
         'locustfile': scenario.locustfile or render_locustfile(
             requests, think_time, target_qps=target_qps, users=users
         ),

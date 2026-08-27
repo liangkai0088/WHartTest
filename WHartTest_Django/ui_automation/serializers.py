@@ -374,7 +374,7 @@ class UiSelfHealingRecordSerializer(serializers.ModelSerializer):
             'id', 'execution_record', 'test_case', 'test_case_name',
             'element', 'element_name', 'step_id', 'failure_message',
             'status', 'diagnosis', 'fix_summary', 'rerun_batch_id',
-            'rerun_success', 'created_at', 'updated_at',
+            'rerun_success', 'retry_count', 'max_retry', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
 

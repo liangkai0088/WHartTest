@@ -621,3 +621,21 @@ class SelfHealingLogicTests(TestCase):
         self.assertIn('登录按钮', prompt)
         self.assertIn('//button[1]', prompt)
         self.assertIn('定位器失效', prompt)
+
+    def test_should_retry_rerun_when_under_limit(self):
+        from ui_automation.self_healing import should_retry_rerun
+
+        self.assertTrue(should_retry_rerun(rerun_success=False, retry_count=0, max_retry=2))
+        self.assertTrue(should_retry_rerun(rerun_success=False, retry_count=1, max_retry=2))
+
+    def test_should_retry_rerun_stops_at_limit(self):
+        from ui_automation.self_healing import should_retry_rerun
+
+        self.assertFalse(should_retry_rerun(rerun_success=False, retry_count=2, max_retry=2))
+        self.assertFalse(should_retry_rerun(rerun_success=False, retry_count=0, max_retry=0))
+
+    def test_should_retry_rerun_success_no_retry(self):
+        from ui_automation.self_healing import should_retry_rerun
+
+        self.assertFalse(should_retry_rerun(rerun_success=True, retry_count=0, max_retry=2))
+        self.assertFalse(should_retry_rerun(rerun_success=None, retry_count=0, max_retry=2))

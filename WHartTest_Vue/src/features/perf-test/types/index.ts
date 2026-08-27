@@ -41,6 +41,8 @@ export interface PerfTestPlan {
   duration: number
   think_time: number
   target_qps: number | null
+  node: number | null
+  node_name: string | null
   created_at: string
   updated_at: string
 }
@@ -81,6 +83,8 @@ export interface PerfTestExecution {
   finished_at: string | null
   executed_by: number | null
   executed_by_name: string
+  node: number | null
+  node_name: string | null
   report_id: number | null
   created_at: string
 }

@@ -21,6 +21,7 @@ def is_locator_failure(step):
 
 def trigger_from_execution_record(record_id):
     """执行失败后：识别定位失效步骤，创建自愈记录并投递诊断任务。"""
+    from django.conf import settings
     from .models import UiExecutionRecord, UiSelfHealingRecord
 
     record = UiExecutionRecord.objects.get(id=record_id)
@@ -32,12 +33,14 @@ def trigger_from_execution_record(record_id):
     if failed_step is None:
         return None
 
+    max_retry = int(getattr(settings, 'UI_SELF_HEALING_MAX_RETRY', 1) or 0)
     healing = UiSelfHealingRecord.objects.create(
         execution_record=record,
         test_case_id=record.test_case_id,
         step_id=failed_step.get('step_id'),
         failure_message=(failed_step.get('message') or '')[:2000],
         status='pending',
+        max_retry=max_retry,
     )
 
     from .tasks import diagnose_ui_failure
@@ -203,3 +206,43 @@ def _trigger_rerun(healing):
     if resp.status_code >= 400:
         raise RuntimeError(f"触发重跑失败: {resp.text[:200]}")
     healing.rerun_batch_id = resp.json().get('data', {}).get('batch_id')
+
+
+def should_retry_rerun(rerun_success, retry_count, max_retry):
+    """重跑失败后是否继续触发下一轮自愈诊断。
+
+    :param rerun_success: 重跑是否成功（None 表示尚未重跑，不触发）
+    :param retry_count: 已触发的自愈重试次数
+    :param max_retry: 允许的最大自愈重试次数（0 表示一次性，不循环）
+    """
+    if rerun_success is None:
+        return False
+    if rerun_success:
+        return False
+    return retry_count < max_retry
+
+
+def schedule_retry_if_failed(healing_id):
+    """重跑失败且未达上限时，再次投递诊断任务进入下一轮自愈循环。
+
+    返回是否安排了下一轮；否则将记录标记为自愈失败。
+    """
+    from .models import UiSelfHealingRecord
+
+    healing = UiSelfHealingRecord.objects.get(id=healing_id)
+
+    if not should_retry_rerun(healing.rerun_success, healing.retry_count, healing.max_retry):
+        if healing.status == 'diagnosing' and healing.rerun_success is False:
+            healing.status = 'failed'
+            healing.save(update_fields=['status'])
+        return False
+
+    healing.retry_count += 1
+    healing.status = 'pending'
+    healing.save(update_fields=['retry_count', 'status'])
+
+    from .tasks import diagnose_ui_failure
+
+    diagnose_ui_failure.delay(healing.id)
+    logger.info(f"自愈进入下一轮重试 healing={healing.id} 第 {healing.retry_count} 次")
+    return True
