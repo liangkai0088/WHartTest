@@ -218,7 +218,9 @@ def compute_coverage_delta(
             covered_new_lines = 0
             for line_no, hits in current_lines.items():
                 base_hits = base_lines.get(line_no)
-                if base_hits is None or base_hits == 0:
+                # 新增可执行行 = 当前有而基线无的行，或基线未覆盖(0)且当前已覆盖(>0)的改善行；
+                # 基线未覆盖且当前仍未覆盖(0->0)不算新增。
+                if base_hits is None or (base_hits == 0 and hits > 0):
                     new_lines += 1
                     if hits > 0:
                         covered_new_lines += 1

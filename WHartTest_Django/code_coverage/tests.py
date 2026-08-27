@@ -137,6 +137,21 @@ class CoverageDeltaTests(SimpleTestCase):
         self.assertEqual(files[0]['status'], 'unchanged')
         self.assertEqual(files[0]['delta_coverage'], 0.0)
 
+    def test_uncovered_line_0_to_0_not_counted_as_new(self):
+        # 回归：基线未覆盖(0)、当前仍未覆盖(0) 的行不算新增可执行行
+        base_files = [
+            {'file_path': 'a.py', 'lines_detail': {'1': 1, '2': 0}}
+        ]
+        current_files = [
+            {'file_path': 'a.py', 'lines_detail': {'1': 1, '2': 0}}
+        ]
+
+        summary, files = compute_coverage_delta(base_files, current_files)
+
+        self.assertEqual(summary['files_unchanged'], 1)
+        self.assertEqual(summary['new_lines_total'], 0)
+        self.assertEqual(files[0]['status'], 'unchanged')
+
 
 class CoverageGateConfigTest(SimpleTestCase):
     def test_gate_passes_above_threshold(self):
