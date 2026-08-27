@@ -131,16 +131,56 @@
             </div>
           </a-col>
         </a-row>
+        <h4 class="subsection-title">{{ tl('文件覆盖率分布') }}</h4>
+        <EChart :option="filesBucketOption" height="240px" />
         <h4 class="subsection-title">{{ tl('文件级覆盖率') }}</h4>
-        <a-table :data="files" :loading="fileLoading" row-key="id" :pagination="false" size="small">
+        <a-table :data="files" :loading="fileLoading" row-key="id" :pagination="false" size="small"
+          :default-sort="{ field: 'line_coverage', direction: 'ascend' }">
           <template #columns>
             <a-table-column :title="tl('文件路径')" data-index="file_path" />
-            <a-table-column :title="tl('行覆盖%')" data-index="line_coverage" :width="90" />
+            <a-table-column :title="tl('行覆盖%')" data-index="line_coverage" :width="90" :sortable="true">
+              <template #cell="{ record }">{{ record.line_coverage }}</template>
+            </a-table-column>
             <a-table-column :title="tl('分支覆盖%')" :width="90">
               <template #cell="{ record }">{{ record.branch_coverage ?? '-' }}</template>
             </a-table-column>
+            <a-table-column :title="tl('覆盖/总行')" :width="110">
+              <template #cell="{ record }">
+                <span class="lines-stat">{{ record.lines_covered }} / {{ record.lines_total }}</span>
+              </template>
+            </a-table-column>
+            <a-table-column :title="tl('操作')" :width="80" fixed="right">
+              <template #cell="{ record }">
+                <a-button size="mini" @click="openLine(record)">{{ tl('行级') }}</a-button>
+              </template>
+            </a-table-column>
           </template>
         </a-table>
+      </template>
+    </a-drawer>
+
+    <!-- 行级覆盖热力图 -->
+    <a-drawer v-model:visible="lineVisible" :title="tl('行级覆盖热力图')" :width="720">
+      <template v-if="currentFile">
+        <div class="line-summary">
+          <a-descriptions :column="3" size="small">
+            <a-descriptions-item :label="tl('文件')">{{ currentFile.file_path }}</a-descriptions-item>
+            <a-descriptions-item :label="tl('行覆盖%')">{{ currentFile.line_coverage }}</a-descriptions-item>
+            <a-descriptions-item :label="tl('覆盖/总行')">{{ currentFile.lines_covered }} / {{ currentFile.lines_total }}</a-descriptions-item>
+          </a-descriptions>
+        </div>
+        <div class="heatmap-legend">
+          <span class="heat-cell covered"></span><span>{{ tl('已覆盖') }}</span>
+          <span class="heat-cell uncovered"></span><span>{{ tl('未覆盖') }}</span>
+        </div>
+        <div class="heatmap">
+          <span v-for="cell in lineCells" :key="cell.line" class="heat-cell"
+            :style="{ background: lineCellColor(cell.hits) }" @click="selectHeatCell(cell)"></span>
+          <div v-if="!lineCells.length" class="heatmap-empty">{{ tl('暂无行级数据') }}</div>
+        </div>
+        <div v-if="selectedHeatCell" class="heatmap-detail">
+          {{ tl('行') }} {{ selectedHeatCell.line }} — {{ selectedHeatCell.hits }} {{ tl('次命中') }}
+        </div>
       </template>
     </a-drawer>
 
@@ -186,6 +226,7 @@ import { Message } from '@arco-design/web-vue'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { extractPaginationData, extractResponseData } from '@/features/ui-automation/types'
+import EChart from '@/features/perf-test/components/EChart.vue'
 import { coverageReportApi, coverageDeltaApi } from '../api'
 import type {
   CoverageReport, CoverageFile, CoverageDelta, CoverageUploadForm,
@@ -317,6 +358,41 @@ const openDeltaDetail = (record: CoverageDelta) => {
   deltaDetailVisible.value = true
 }
 
+// 行级热力图：覆盖率分布柱状图（文件覆盖率分桶）
+const filesBucketOption = computed(() => {
+  const buckets = [0, 20, 40, 60, 80, 100]
+  const labels = ['0-20', '20-40', '40-60', '60-80', '80-100']
+  const counts = labels.map((_, i) =>
+    files.value.filter((f) => f.line_coverage >= buckets[i] && f.line_coverage < (buckets[i + 1] ?? 101)).length
+  )
+  return {
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 20, bottom: 30 },
+    xAxis: { type: 'category', data: labels },
+    yAxis: { type: 'value', name: tl('文件数') },
+    series: [{ type: 'bar', data: counts, itemStyle: { color: '#3a7afe' }, barMaxWidth: 40 }],
+  }
+})
+
+// 行级热力图
+const lineVisible = ref(false)
+const currentFile = ref<CoverageFile | null>(null)
+const selectedHeatCell = ref<{ line: number; hits: number } | null>(null)
+const lineCells = computed(() => {
+  const detail = currentFile.value?.lines_detail || {}
+  const cells = Object.entries(detail)
+    .map(([k, hits]) => ({ line: Number(k), hits: Number(hits) }))
+    .sort((a, b) => a.line - b.line)
+  return cells
+})
+const lineCellColor = (hits: number) => (hits > 0 ? '#3a7afe' : '#e5e6eb')
+const openLine = (record: CoverageFile) => {
+  currentFile.value = record
+  selectedHeatCell.value = null
+  lineVisible.value = true
+}
+const selectHeatCell = (cell: { line: number; hits: number }) => { selectedHeatCell.value = cell }
+
 watch(projectId, () => { onSearch(); fetchDeltas() })
 onMounted(loadAll)
 </script>
@@ -329,4 +405,12 @@ onMounted(loadAll)
 .subsection-title { margin: 14px 0 8px; }
 .cov-progress { margin-bottom: 8px; }
 .cov-progress span { display: block; margin-bottom: 4px; }
+.lines-stat { font-variant-numeric: tabular-nums; }
+.line-summary { margin-bottom: 8px; }
+.heatmap-legend { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; color: var(--color-text-3, #999); }
+.heatmap { display: flex; flex-wrap: wrap; gap: 2px; max-height: 360px; overflow: auto; padding: 4px; background: var(--color-fill-2, #f5f5f5); border-radius: 6px; }
+.heat-cell { display: inline-block; width: 12px; height: 12px; border-radius: 2px; flex: 0 0 auto; }
+.heatmap-legend .heat-cell { width: 12px; height: 12px; }
+.heatmap-empty { padding: 20px; color: var(--color-text-3, #999); }
+.heatmap-detail { margin-top: 8px; font-size: 12px; color: var(--color-text-2, #444); }
 </style>

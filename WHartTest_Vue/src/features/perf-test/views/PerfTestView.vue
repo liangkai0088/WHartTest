@@ -104,21 +104,29 @@
         </a-table>
       </a-tab-pane>
 
-      <a-tab-pane key="reports" :title="tl('压测报告')">
-        <a-table :data="reports" :loading="reportLoading" row-key="id" :pagination="false">
+      <a-tab-pane key="nodes" :title="tl('压测节点')">
+        <a-table :data="nodes" :loading="nodeLoading" row-key="id" :pagination="false">
           <template #columns>
-            <a-table-column title="ID" data-index="id" :width="70" />
-            <a-table-column :title="tl('执行')" data-index="execution" :width="90" />
-            <a-table-column :title="tl('总请求')" data-index="total_requests" :width="90" />
-            <a-table-column :title="tl('错误率%')" data-index="error_rate" :width="90" />
-            <a-table-column :title="tl('P95(ms)')" data-index="p95" :width="90" />
-            <a-table-column :title="tl('峰值QPS')" data-index="peak_rps" :width="90" />
-            <a-table-column :title="tl('创建时间')" data-index="created_at" :width="170" />
-            <a-table-column :title="tl('操作')" :width="100" fixed="right">
+            <a-table-column :title="tl('节点名称')" data-index="name" />
+            <a-table-column :title="tl('主机')" data-index="host" />
+            <a-table-column :title="tl('状态')" :width="100">
               <template #cell="{ record }">
-                <a-button size="mini" @click="openReport(record)">{{ tl('详情') }}</a-button>
+                <a-tag :color="record.status === 'online' ? 'green' : 'gray'">
+                  {{ record.status === 'online' ? tl('在线') : tl('离线') }}
+                </a-tag>
               </template>
             </a-table-column>
+            <a-table-column :title="tl('CPU 使用%')" :width="160">
+              <template #cell="{ record }">
+                <a-progress :percent="record.cpu_usage || 0" :size="'mini'" />
+              </template>
+            </a-table-column>
+            <a-table-column :title="tl('内存使用%')" :width="160">
+              <template #cell="{ record }">
+                <a-progress :percent="record.memory_usage || 0" :size="'mini'" />
+              </template>
+            </a-table-column>
+            <a-table-column :title="tl('最近心跳')" data-index="last_heartbeat" :width="180" />
           </template>
         </a-table>
       </a-tab-pane>
@@ -243,10 +251,10 @@ import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { extractPaginationData, extractResponseData } from '@/features/ui-automation/types'
 import EChart from '../components/EChart.vue'
-import { perfScenarioApi, perfReportApi, perfExecutionApi } from '../api'
+import { perfScenarioApi, perfReportApi, perfExecutionApi, perfNodeApi } from '../api'
 import { perfWebSocket } from '../services/websocket'
 import type {
-  PerfTestScenario, PerfTestExecution, PerfTestReport, PerfRealtimeUpdate, PerfScenarioTemplate,
+  PerfTestScenario, PerfTestExecution, PerfTestReport, PerfRealtimeUpdate, PerfScenarioTemplate, PerfTestNode,
 } from '../types'
 
 const { locale, t, tl } = useAppI18n()
@@ -270,6 +278,9 @@ const executions = ref<PerfTestExecution[]>([])
 const executionLoading = ref(false)
 const reports = ref<PerfTestReport[]>([])
 const reportLoading = ref(false)
+const nodes = ref<PerfTestNode[]>([])
+const nodeLoading = ref(false)
+let nodeTimer: ReturnType<typeof setInterval> | null = null
 
 async function fetchScenarios() {
   if (!projectId.value) return
@@ -311,10 +322,23 @@ async function fetchReports() {
   }
 }
 
+async function fetchNodes() {
+  nodeLoading.value = true
+  try {
+    const res = await perfNodeApi.list({})
+    nodes.value = extractPaginationData(res).items
+  } catch {
+    Message.error(tl('加载节点失败'))
+  } finally {
+    nodeLoading.value = false
+  }
+}
+
 function loadAll() {
   fetchScenarios()
   fetchExecutions()
   fetchReports()
+  fetchNodes()
 }
 
 const onSearch = () => {
@@ -563,8 +587,10 @@ const executionStatusColor = (s: string) => ({ pending: 'gray', running: 'blue',
 
 onMounted(() => {
   loadAll()
+  nodeTimer = setInterval(fetchNodes, 5000)
 })
 onBeforeUnmount(() => {
+  if (nodeTimer) clearInterval(nodeTimer)
   perfWebSocket.disconnect()
   offUpdate?.()
 })
