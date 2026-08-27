@@ -136,3 +136,29 @@ class CoverageDeltaTests(SimpleTestCase):
         self.assertEqual(summary['files_unchanged'], 1)
         self.assertEqual(files[0]['status'], 'unchanged')
         self.assertEqual(files[0]['delta_coverage'], 0.0)
+
+
+class CoverageGateConfigTest(SimpleTestCase):
+    def test_gate_passes_above_threshold(self):
+        from .models import CoverageGateConfig
+
+        config = CoverageGateConfig(enabled=True, min_line_coverage=80.0)
+        result = config.evaluate(92.0)
+        self.assertTrue(result['passed'])
+        self.assertTrue(result['enabled'])
+        self.assertEqual(result['threshold'], 80.0)
+
+    def test_gate_fails_below_threshold(self):
+        from .models import CoverageGateConfig
+
+        config = CoverageGateConfig(enabled=True, min_line_coverage=80.0)
+        result = config.evaluate(65.0)
+        self.assertFalse(result['passed'])
+
+    def test_gate_disabled_returns_none(self):
+        from .models import CoverageGateConfig
+
+        config = CoverageGateConfig(enabled=False, min_line_coverage=80.0)
+        result = config.evaluate(65.0)
+        self.assertIsNone(result['passed'])
+        self.assertFalse(result['enabled'])

@@ -13,6 +13,17 @@
       </div>
     </div>
 
+    <a-card class="gate-card" size="small">
+      <template #title>{{ tl('覆盖率门禁') }}</template>
+      <a-space>
+        <span>{{ tl('启用') }}</span>
+        <a-switch v-model="gateConfig.enabled" />
+        <span>{{ tl('最小行覆盖率阈值(%)') }}</span>
+        <a-input-number v-model="gateConfig.min_line_coverage" :min="0" :max="100" :step="1" style="width: 110px" />
+        <a-button type="primary" :loading="gateSaving" @click="saveGate">{{ tl('保存') }}</a-button>
+      </a-space>
+    </a-card>
+
     <a-tabs :key="`coverage-tabs-${locale}`" v-model:active-key="activeTab" type="card-gutter">
       <a-tab-pane key="reports" :title="tl('覆盖率报表')">
         <a-table :data="reports" :loading="reportLoading" row-key="id" :pagination="pagination"
@@ -23,6 +34,14 @@
             <a-table-column :title="tl('测试类型')" data-index="test_type" :width="100" />
             <a-table-column :title="tl('行覆盖率%')" :width="110">
               <template #cell="{ record }">{{ record.summary?.line_coverage ?? '-' }}</template>
+            </a-table-column>
+            <a-table-column :title="tl('门禁')" :width="90">
+              <template #cell="{ record }">
+                <span v-if="!gateConfig.enabled">-</span>
+                <a-tag v-else :color="isGatePassed(record) ? 'green' : 'red'">
+                  {{ isGatePassed(record) ? tl('通过') : tl('阻断') }}
+                </a-tag>
+              </template>
             </a-table-column>
             <a-table-column :title="tl('文件数')" :width="90">
               <template #cell="{ record }">{{ record.file_count }}</template>
@@ -227,9 +246,9 @@ import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { extractPaginationData, extractResponseData } from '@/features/ui-automation/types'
 import EChart from '@/features/perf-test/components/EChart.vue'
-import { coverageReportApi, coverageDeltaApi } from '../api'
+import { coverageReportApi, coverageDeltaApi, coverageGateApi } from '../api'
 import type {
-  CoverageReport, CoverageFile, CoverageDelta, CoverageUploadForm,
+  CoverageReport, CoverageFile, CoverageDelta, CoverageUploadForm, CoverageGateConfig,
 } from '../types'
 
 const { locale, t, tl } = useAppI18n()
@@ -281,6 +300,47 @@ async function fetchDeltas() {
 function loadAll() {
   fetchReports()
   fetchDeltas()
+}
+
+// 覆盖率门禁
+const gateConfig = reactive<{ enabled: boolean; min_line_coverage: number }>({ enabled: false, min_line_coverage: 80 })
+const gateSaving = ref(false)
+
+async function fetchGate() {
+  if (!projectId.value) return
+  try {
+    const res = await coverageGateApi.byProject(projectId.value)
+    const gate = extractResponseData<CoverageGateConfig>(res)
+    if (gate) {
+      gateConfig.enabled = gate.enabled
+      gateConfig.min_line_coverage = gate.min_line_coverage
+    }
+  } catch {
+    // 忽略门禁读取失败，默认不启用
+  }
+}
+
+async function saveGate() {
+  if (!projectId.value) return
+  gateSaving.value = true
+  try {
+    const res = await coverageGateApi.byProject(projectId.value)
+    const gate = extractResponseData<CoverageGateConfig>(res)
+    if (gate) {
+      await coverageGateApi.update(gate.id, { enabled: gateConfig.enabled, min_line_coverage: gateConfig.min_line_coverage })
+      Message.success(tl('门禁已保存'))
+      fetchReports()
+    }
+  } catch {
+    Message.error(tl('保存门禁失败'))
+  } finally {
+    gateSaving.value = false
+  }
+}
+
+function isGatePassed(record: CoverageReport): boolean {
+  const actual = record.summary?.line_coverage ?? 0
+  return actual >= gateConfig.min_line_coverage
 }
 
 const onSearch = () => { pagination.current = 1; fetchReports() }
@@ -393,8 +453,8 @@ const openLine = (record: CoverageFile) => {
 }
 const selectHeatCell = (cell: { line: number; hits: number }) => { selectedHeatCell.value = cell }
 
-watch(projectId, () => { onSearch(); fetchDeltas() })
-onMounted(loadAll)
+watch(projectId, () => { onSearch(); fetchDeltas(); fetchGate() })
+onMounted(() => { loadAll(); fetchGate() })
 </script>
 
 <style scoped>
@@ -402,6 +462,7 @@ onMounted(loadAll)
 .view-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .view-title { margin: 0; font-size: 18px; }
 .view-actions { display: flex; gap: 8px; }
+.gate-card { margin-bottom: 14px; }
 .subsection-title { margin: 14px 0 8px; }
 .cov-progress { margin-bottom: 8px; }
 .cov-progress span { display: block; margin-bottom: 4px; }

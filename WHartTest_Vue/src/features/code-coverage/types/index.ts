@@ -85,6 +85,22 @@ export interface CoverageUploadForm {
   file: File
 }
 
+export interface CoverageGateConfig {
+  id: number
+  project: number
+  enabled: boolean
+  min_line_coverage: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CoverageGateResult {
+  enabled: boolean
+  threshold: number | null
+  actual_line_coverage: number | null
+  passed: boolean | null
+}
+
 /** 分页响应结构 */
 export interface PaginatedResponse<T> {
   count: number

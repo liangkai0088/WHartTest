@@ -9,12 +9,13 @@ from projects.models import Project
 from wharttest_django.pagination import StandardPagination
 from wharttest_django.viewsets import BaseModelViewSet
 
-from .models import CoverageReport, CoverageFile, CoverageDelta
+from .models import CoverageReport, CoverageFile, CoverageDelta, CoverageGateConfig
 from .serializers import (
     CoverageReportSerializer,
     CoverageUploadSerializer,
     CoverageFileSerializer,
     CoverageDeltaSerializer,
+    CoverageGateConfigSerializer,
 )
 from .services import parse_coverage_report, build_delta_for_reports
 
@@ -147,6 +148,21 @@ class CoverageReportViewSet(BaseModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @action(detail=True, methods=['get'])
+    def check_gate(self, request, pk=None):
+        """对本报告执行覆盖率门禁检查，返回是否通过阈值。"""
+        report = self.get_object()
+        gate = CoverageGateConfig.objects.filter(project_id=report.project_id).first()
+        if gate is None:
+            return Response({
+                'enabled': False,
+                'threshold': None,
+                'actual_line_coverage': report.summary.get('line_coverage') if report.summary else None,
+                'passed': None,
+            })
+        actual = report.summary.get('line_coverage') if report.summary else 0
+        return Response(gate.evaluate(actual))
+
     @staticmethod
     def _resolve_project(project_id, request):
         try:
@@ -179,3 +195,24 @@ class CoverageDeltaViewSet(BaseModelViewSet):
         return CoverageDelta.objects.filter(
             project__members__user=user
         ).distinct()
+
+
+class CoverageGateConfigViewSet(BaseModelViewSet):
+    """覆盖率门禁配置视图集：按项目读取，可更新阈值与开关。"""
+
+    queryset = CoverageGateConfig.objects.select_related('project')
+    serializer_class = CoverageGateConfigSerializer
+    pagination_class = None
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['project']
+
+    @action(detail=False, methods=['get'])
+    def by_project(self, request):
+        """按项目返回门禁配置，不存在则按默认创建后返回。"""
+        project_id = request.query_params.get('project')
+        if not project_id:
+            return Response({'error': 'project 参数必填'}, status=status.HTTP_400_BAD_REQUEST)
+        gate, _ = CoverageGateConfig.objects.get_or_create(
+            project_id=project_id, defaults={'enabled': False, 'min_line_coverage': 80.0}
+        )
+        return Response(CoverageGateConfigSerializer(gate).data)

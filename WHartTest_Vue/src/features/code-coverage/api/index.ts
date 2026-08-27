@@ -6,6 +6,8 @@ import type {
   CoverageFile,
   CoverageDelta,
   CoverageUploadForm,
+  CoverageGateConfig,
+  CoverageGateResult,
   PaginatedResponse,
 } from '../types'
 
@@ -34,6 +36,8 @@ export const coverageReportApi = {
 
   generateDelta: (id: string, baseReportId: string) =>
     request.post<CoverageDelta>(`${BASE_URL}/reports/${id}/generate_delta/`, { base_report_id: baseReportId }),
+
+  checkGate: (id: string) => request.get<CoverageGateResult>(`${BASE_URL}/reports/${id}/check_gate/`),
 }
 
 export const coverageDeltaApi = {
@@ -41,4 +45,12 @@ export const coverageDeltaApi = {
     request.get<PaginatedResponse<CoverageDelta>>(`${BASE_URL}/deltas/`, { params }),
 
   get: (id: string) => request.get<CoverageDelta>(`${BASE_URL}/deltas/${id}/`),
+}
+
+export const coverageGateApi = {
+  byProject: (project: number) =>
+    request.get<CoverageGateConfig>(`${BASE_URL}/gate-config/by_project/`, { params: { project } }),
+
+  update: (id: number, data: Partial<CoverageGateConfig>) =>
+    request.patch<CoverageGateConfig>(`${BASE_URL}/gate-config/${id}/`, data),
 }

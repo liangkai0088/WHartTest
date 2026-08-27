@@ -159,3 +159,38 @@ class CoverageDelta(models.Model):
 
     def __str__(self):
         return f"{self.git_commit[:8]} - {self.summary.get('delta_coverage', 0)}%"
+
+
+class CoverageGateConfig(models.Model):
+    """覆盖率门禁配置：对项目设置行覆盖率阈值，低于阈值可视为阻断合并。"""
+
+    project = models.OneToOneField(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='coverage_gate',
+        verbose_name=_('所属项目'),
+    )
+    enabled = models.BooleanField(_('启用门禁'), default=False)
+    min_line_coverage = models.FloatField(_('最小行覆盖率阈值(%)'), default=80.0)
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('覆盖率门禁配置')
+        verbose_name_plural = _('覆盖率门禁配置')
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.project.name} - {self.min_line_coverage}%"
+
+    def evaluate(self, line_coverage):
+        """根据阈值评估是否通过门禁。"""
+        if not self.enabled:
+            return {'enabled': False, 'passed': None}
+        passed = line_coverage >= self.min_line_coverage
+        return {
+            'enabled': True,
+            'threshold': self.min_line_coverage,
+            'actual': line_coverage,
+            'passed': passed,
+        }

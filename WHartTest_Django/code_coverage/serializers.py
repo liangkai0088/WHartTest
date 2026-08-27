@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import CoverageReport, CoverageFile, CoverageDelta
+from .models import CoverageReport, CoverageFile, CoverageDelta, CoverageGateConfig
 
 
 class CoverageFileSerializer(serializers.ModelSerializer):
@@ -62,3 +62,12 @@ class CoverageDeltaSerializer(serializers.ModelSerializer):
             'id', 'project', 'report', 'base_report', 'summary', 'files',
             'uploader', 'created_at',
         ]
+
+
+class CoverageGateConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CoverageGateConfig
+        fields = [
+            'id', 'project', 'enabled', 'min_line_coverage', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'project', 'created_at', 'updated_at']
