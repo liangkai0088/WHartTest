@@ -373,7 +373,7 @@ class DistributedSchedulingTest(TestCase):
 
     def setUp(self):
         self.user = User.objects.create_user('dist', 'dist@t.com', 'pw')
-        self.project = Project.objects.create(name='dist-proj', owner=self.user)
+        self.project = Project.objects.create(name='dist-proj', creator=self.user)
         self.scenario = PerfTestScenario.objects.create(
             name='s', project=self.project, created_by=self.user, source='interface'
         )

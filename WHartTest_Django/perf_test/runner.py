@@ -59,7 +59,7 @@ def load_execution_context(execution):
     from .models import PerfTestPlan
 
     scenario = execution.scenario
-    requests = list(scenario.requests.all().order_by('order', 'id'))
+    requests = list(scenario.requests.all().order_by('order', 'id').values())
     if not requests:
         raise ValueError('场景下没有任何请求模板，无法执行')
 

@@ -5,7 +5,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('code_coverage', '0001_initial'),
+        ('code_coverage', '0002_add_coveragedelta'),
     ]
 
     operations = [
