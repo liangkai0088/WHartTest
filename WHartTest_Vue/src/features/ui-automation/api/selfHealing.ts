@@ -38,9 +38,18 @@ export interface UiSelfHealingStats {
   rerun_success: number
 }
 
+export interface UiSelfHealingTrendPoint {
+  date: string
+  healed: number
+  failed: number
+  success_rate: number
+}
+
 export const selfHealingApi = {
   list: (params?: { status?: string; test_case?: number; rerun_success?: boolean; search?: string }) =>
     request.get(`${BASE_URL}/self-healing-records/`, { params }),
 
   stats: () => request.get<UiSelfHealingStats>(`${BASE_URL}/self-healing-records/stats/`),
+
+  trend: () => request.get<UiSelfHealingTrendPoint[]>(`${BASE_URL}/self-healing-records/trend/`),
 }

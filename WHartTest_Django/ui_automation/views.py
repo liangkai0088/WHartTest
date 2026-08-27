@@ -1190,3 +1190,34 @@ class UiSelfHealingRecordViewSet(viewsets.ReadOnlyModelViewSet):
             'rerun_total': rerun_agg['rerun_total'],
             'rerun_success': rerun_agg['rerun_success'],
         })
+
+    @action(detail=False, methods=['get'])
+    def trend(self, request):
+        """按天统计自愈成功率趋势，供前端折线图。"""
+        from django.db.models.functions import TruncDate
+        from django.db.models import Count
+
+        qs = UiSelfHealingRecord.objects.annotate(day=TruncDate('created_at'))
+        status_by_day = qs.values('day', 'status').annotate(count=Count('id'))
+
+        agg = {}
+        for row in status_by_day:
+            day_key = row['day'].isoformat() if row['day'] else 'unknown'
+            agg.setdefault(day_key, {'healed': 0, 'failed': 0})
+
+        for row in status_by_day:
+            day_key = row['day'].isoformat() if row['day'] else 'unknown'
+            if row['status'] in ('healed', 'failed'):
+                agg[day_key][row['status']] += row['count']
+
+        trend = []
+        for day, counts in sorted(agg.items()):
+            resolved = counts['healed'] + counts['failed']
+            success_rate = round(counts['healed'] / resolved * 100, 1) if resolved else 0
+            trend.append({
+                'date': day,
+                'healed': counts['healed'],
+                'failed': counts['failed'],
+                'success_rate': success_rate,
+            })
+        return Response(trend)

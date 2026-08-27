@@ -34,6 +34,12 @@ from .services import (
     render_locustfile,
 )
 from .templates import get_template, list_templates
+from .distributed import (
+    distributed_enabled,
+    claim_task,
+    apply_progress,
+    apply_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +80,11 @@ def _dispatch_execution(execution):
     execution.progress = 0
     execution.error_message = ''
     execution.save()
+
+    # 绑定在线节点且分布式启用时，走 worker 拉取路径（不再本地投递 Celery）
+    if plan and distributed_enabled() and plan.node and plan.node.status == 'online':
+        logger.info(f"执行将分发到节点执行 execution={execution.id} node={plan.node_id}")
+        return execution
 
     from .tasks import run_perf_test
 
@@ -380,3 +391,45 @@ class PerfTestNodeViewSet(BaseModelViewSet):
             },
         )
         return Response(PerfTestNodeSerializer(node).data)
+
+    @action(detail=True, methods=['post'])
+    def claim(self, request, pk=None):
+        """worker 拉取任务：认领绑定到该节点的一个待执行压测。"""
+        execution, payload = claim_task(pk)
+        if payload is None:
+            return Response({'has_task': False})
+        return Response({'has_task': True, 'task': payload})
+
+    @action(detail=True, methods=['post'])
+    def progress(self, request, pk=None):
+        """worker 上报执行进度，刷新进度并推送实时面板。"""
+        execution_id = request.data.get('execution_id')
+        if not execution_id:
+            return Response(
+                {'error': 'execution_id 必填'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        apply_progress(
+            execution_id,
+            float(request.data.get('progress') or 0),
+            float(request.data.get('rps') or 0),
+            float(request.data.get('users') or 0),
+        )
+        return Response({'ok': True})
+
+    @action(detail=True, methods=['post'])
+    def report(self, request, pk=None):
+        """worker 回传执行结果：成功落库报告，失败标记失败。"""
+        execution_id = request.data.get('execution_id')
+        if not execution_id:
+            return Response(
+                {'error': 'execution_id 必填'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        report_id = apply_report(
+            execution_id,
+            request.data.get('stats') or {},
+            request.data.get('series') or [],
+            request.data.get('error') or '',
+        )
+        return Response({'ok': True, 'report_id': report_id})

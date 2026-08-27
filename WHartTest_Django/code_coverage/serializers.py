@@ -15,13 +15,14 @@ class CoverageFileSerializer(serializers.ModelSerializer):
 class CoverageReportSerializer(serializers.ModelSerializer):
     uploader_name = serializers.CharField(source='uploader.username', read_only=True)
     file_count = serializers.SerializerMethodField()
+    gate = serializers.SerializerMethodField()
 
     class Meta:
         model = CoverageReport
         fields = [
             'id', 'project', 'name', 'format', 'test_type',
             'test_execution_ref', 'git_commit', 'status', 'error_message',
-            'summary', 'uploader', 'uploader_name', 'file_count', 'created_at',
+            'summary', 'uploader', 'uploader_name', 'file_count', 'gate', 'created_at',
         ]
         read_only_fields = [
             'id', 'status', 'error_message', 'summary', 'uploader', 'created_at',
@@ -29,6 +30,21 @@ class CoverageReportSerializer(serializers.ModelSerializer):
 
     def get_file_count(self, obj):
         return obj.files.count()
+
+    def get_gate(self, obj):
+        try:
+            gate = obj.project.coverage_gate
+        except CoverageGateConfig.DoesNotExist:
+            return {'enabled': False, 'passed': None}
+        if not gate.enabled:
+            return {'enabled': False, 'passed': None}
+        actual = (obj.summary or {}).get('line_coverage') or 0
+        return {
+            'enabled': True,
+            'threshold': gate.min_line_coverage,
+            'actual': actual,
+            'passed': actual >= gate.min_line_coverage,
+        }
 
 
 class CoverageUploadSerializer(serializers.Serializer):

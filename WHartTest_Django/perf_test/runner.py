@@ -29,7 +29,7 @@ def run_perf_test(execution_id):
 
     execution = PerfTestExecution.objects.get(id=execution_id)
     try:
-        ctx = _load_execution_context(execution)
+        ctx = load_execution_context(execution)
         if ctx.get('node'):
             execution.node = ctx['node']
             execution.save(update_fields=['node'])
@@ -54,7 +54,7 @@ def _workdir_for(execution_id):
     return os.path.join(tempfile.gettempdir(), 'perf_test', str(execution_id))
 
 
-def _load_execution_context(execution):
+def load_execution_context(execution):
     """从执行记录提取运行上下文（负载参数、host、locustfile）。"""
     from .models import PerfTestPlan
 

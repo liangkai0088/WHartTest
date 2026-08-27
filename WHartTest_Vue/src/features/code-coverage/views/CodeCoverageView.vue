@@ -134,6 +134,13 @@
           <a-descriptions-item :label="tl('行覆盖率%')">{{ currentReport.summary?.line_coverage }}</a-descriptions-item>
           <a-descriptions-item :label="tl('分支覆盖%')">{{ currentReport.summary?.branch_coverage }}</a-descriptions-item>
           <a-descriptions-item :label="tl('提交哈希')">{{ currentReport.git_commit || '-' }}</a-descriptions-item>
+          <a-descriptions-item :label="tl('门禁')">
+            <a-tag v-if="currentReport.gate?.enabled" :color="currentReport.gate.passed ? 'green' : 'red'">
+              {{ currentReport.gate.passed ? tl('通过') : tl('阻断') }}
+              ({{ currentReport.gate.threshold }}%)
+            </a-tag>
+            <span v-else>-</span>
+          </a-descriptions-item>
         </a-descriptions>
         <h4 class="subsection-title">{{ tl('覆盖率概览') }}</h4>
         <a-row :gutter="16">

@@ -66,7 +66,7 @@ def diagnose_failure(healing_id):
             healing.save(update_fields=['status', 'fix_summary'])
             return {'status': 'ignored'}
 
-        fix = _diagnose(element, page_url, healing.failure_message)
+        fix = _diagnose(element, page_url, healing.failure_message, healing)
         healing.diagnosis = fix
         healing.save(update_fields=['diagnosis'])
 
@@ -110,7 +110,12 @@ def _resolve_element(healing):
     return detail.element, (page.url or '')
 
 
-def _build_prompt(element, page_url, failure_message):
+def _build_prompt(element, page_url, failure_message, context=''):
+    trace_block = (
+        f"\n- 执行上下文/调试信息(Trace):\n{context}\n"
+        if context
+        else ''
+    )
     return (
         "你是 UI 自动化测试专家。一个页面元素定位失效，请根据元素信息、当前定位器和失败信息，"
         "推荐一个更稳定的定位表达式。\n\n"
@@ -120,7 +125,8 @@ def _build_prompt(element, page_url, failure_message):
         f"- 备用定位1: [{element.locator_type_2 or '-'}] {element.locator_value_2 or ''}\n"
         f"- 备用定位2: [{element.locator_type_3 or '-'}] {element.locator_value_3 or ''}\n"
         f"- 页面 URL: {page_url or ''}\n"
-        f"- 失败信息: {failure_message}\n\n"
+        f"- 失败信息: {failure_message}\n"
+        f"{trace_block}"
         "请严格按以下 JSON 格式输出（不要输出其他内容）：\n"
         '{"new_locator_type": "css|xpath|text|role|label|placeholder|test_id|id|name", '
         '"new_locator_value": "新的定位表达式", "reason": "推荐理由"}'
@@ -140,7 +146,7 @@ def parse_fix(raw):
     return json.loads(text[start:end + 1])
 
 
-def _diagnose(element, page_url, failure_message):
+def _diagnose(element, page_url, failure_message, healing=None):
     from langchain_core.messages import HumanMessage
     from langgraph_integration.models import LLMConfig
     from langgraph_integration.views import create_llm_instance
@@ -151,9 +157,31 @@ def _diagnose(element, page_url, failure_message):
 
     llm = create_llm_instance(config, temperature=0.1)
     raw = llm.invoke([HumanMessage(content=_build_prompt(
-        element, page_url, failure_message
+        element, page_url, failure_message, _extract_trace(healing)
     ))]).content
     return parse_fix(raw)
+
+
+def _extract_trace(healing, limit=1200):
+    """从自愈记录尽力提取执行上下文 / DOM 快照用于诊断，无则返回空字符串。"""
+    if healing is None:
+        return ''
+    record = getattr(healing, 'execution_record', None)
+    if record is None:
+        return ''
+
+    parts = []
+    if record.trace_data:
+        parts.append(json.dumps(record.trace_data, ensure_ascii=False))
+    if record.log:
+        parts.append(record.log)
+    if record.error_message:
+        parts.append(record.error_message)
+
+    context = '\n'.join(p for p in parts if p)
+    if not context:
+        return ''
+    return context[:limit]
 
 
 def _apply_fix(element, fix):

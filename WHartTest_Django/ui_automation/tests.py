@@ -639,3 +639,25 @@ class SelfHealingLogicTests(TestCase):
 
         self.assertFalse(should_retry_rerun(rerun_success=True, retry_count=0, max_retry=2))
         self.assertFalse(should_retry_rerun(rerun_success=None, retry_count=0, max_retry=2))
+
+    def test_extract_trace_limits_and_prefers_data(self):
+        from ui_automation.self_healing import _extract_trace
+
+        class Rec:
+            trace_data = {'dom': '<button id="x">'}
+            log = 'login page'
+            error_message = 'locator missing'
+
+        class Healing:
+            execution_record = Rec()
+
+        context = _extract_trace(Healing())
+        self.assertIn('login page', context)
+        self.assertIn('locator missing', context)
+        self.assertIn('<button', context)
+
+    def test_extract_trace_empty_when_no_record(self):
+        from ui_automation.self_healing import _extract_trace
+
+        self.assertEqual(_extract_trace(None), '')
+        self.assertEqual(_extract_trace(type('H', (), {'execution_record': None})()), '')

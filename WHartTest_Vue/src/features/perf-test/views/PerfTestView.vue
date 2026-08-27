@@ -294,6 +294,7 @@ const reportLoading = ref(false)
 const nodes = ref<PerfTestNode[]>([])
 const nodeLoading = ref(false)
 let nodeTimer: ReturnType<typeof setInterval> | null = null
+let execsTimer: ReturnType<typeof setInterval> | null = null
 
 async function fetchScenarios() {
   if (!projectId.value) return
@@ -321,6 +322,15 @@ async function fetchExecutions() {
   } finally {
     executionLoading.value = false
   }
+}
+
+// WS 不推送完成态，这里兜底轮询 running/pending 执行直到结束
+function pollRunningExecutions() {
+  const active = executions.value.some(
+    (e) => e.status === 'running' || e.status === 'pending'
+  )
+  if (!active) return
+  fetchExecutions()
 }
 
 async function fetchReports() {
@@ -628,9 +638,11 @@ const executionStatusColor = (s: string) => ({ pending: 'gray', running: 'blue',
 onMounted(() => {
   loadAll()
   nodeTimer = setInterval(fetchNodes, 5000)
+  execsTimer = setInterval(pollRunningExecutions, 5000)
 })
 onBeforeUnmount(() => {
   if (nodeTimer) clearInterval(nodeTimer)
+  if (execsTimer) clearInterval(execsTimer)
   perfWebSocket.disconnect()
   offUpdate?.()
 })

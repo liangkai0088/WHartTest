@@ -9,6 +9,12 @@
       </div>
     </div>
 
+    <a-card class="trend-card" size="small">
+      <template #title>{{ tl('自愈成功率趋势') }}</template>
+      <EChart v-if="trendPoints.length" :option="trendOption" height="240px" />
+      <a-empty v-else :description="tl('暂无趋势数据')" />
+    </a-card>
+
     <a-table :data="records" :loading="loading" row-key="id" :pagination="pagination"
       @page-change="onPageChange" @page-size-change="onPageSizeChange">
       <template #columns>
@@ -58,11 +64,13 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, onMounted } from 'vue'
+import { reactive, ref, onMounted, computed } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { extractPaginationData, extractResponseData } from '../types'
-import { selfHealingApi, type UiSelfHealingRecord, type UiSelfHealingStats } from '../api/selfHealing'
+import { selfHealingApi, type UiSelfHealingRecord, type UiSelfHealingStats, type UiSelfHealingTrendPoint } from '../api/selfHealing'
+import EChart from '@/features/perf-test/components/EChart.vue'
+import type { EChartsOption } from 'echarts'
 
 const { locale, t, tl } = useAppI18n()
 
@@ -97,6 +105,30 @@ async function fetchStats() {
   }
 }
 
+const trendPoints = ref<UiSelfHealingTrendPoint[]>([])
+const trendOption = computed<EChartsOption>(() => ({
+  tooltip: { trigger: 'axis' },
+  grid: { left: 40, right: 20, top: 20, bottom: 30 },
+  xAxis: { type: 'category', data: trendPoints.value.map((p) => p.date) },
+  yAxis: { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%' } },
+  series: [{
+    name: tl('成功率'),
+    type: 'line',
+    smooth: true,
+    data: trendPoints.value.map((p) => p.success_rate),
+    areaStyle: { opacity: 0.15 },
+  }],
+}))
+
+async function fetchTrend() {
+  try {
+    const res = await selfHealingApi.trend()
+    trendPoints.value = extractResponseData<UiSelfHealingTrendPoint[]>(res) || []
+  } catch {
+    Message.error(tl('加载趋势失败'))
+  }
+}
+
 const onPageChange = (page: number) => { pagination.current = page; fetchRecords() }
 const onPageSizeChange = (size: number) => { pagination.pageSize = size; pagination.current = 1; fetchRecords() }
 
@@ -104,7 +136,7 @@ const detailVisible = ref(false)
 const currentRecord = ref<UiSelfHealingRecord | null>(null)
 const openDetail = (record: UiSelfHealingRecord) => { currentRecord.value = record; detailVisible.value = true }
 
-onMounted(() => { fetchRecords(); fetchStats() })
+onMounted(() => { fetchRecords(); fetchStats(); fetchTrend() })
 </script>
 
 <style scoped>
@@ -112,5 +144,6 @@ onMounted(() => { fetchRecords(); fetchStats() })
 .view-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .view-title { margin: 0; font-size: 18px; }
 .view-actions { display: flex; gap: 24px; }
+.trend-card { margin-bottom: 14px; }
 .detail-pre { margin: 0; background: var(--color-fill-2, #f5f5f5); padding: 10px; border-radius: 6px; max-height: 240px; overflow: auto; font-size: 12px; }
 </style>

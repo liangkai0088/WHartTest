@@ -28,6 +28,7 @@ export interface CoverageReport {
   uploader: number | null
   uploader_name: string
   file_count: number
+  gate: CoverageGateOnReport | null
   created_at: string
 }
 
@@ -98,6 +99,13 @@ export interface CoverageGateResult {
   enabled: boolean
   threshold: number | null
   actual_line_coverage: number | null
+  passed: boolean | null
+}
+
+export interface CoverageGateOnReport {
+  enabled: boolean
+  threshold: number | null
+  actual: number | null
   passed: boolean | null
 }
 

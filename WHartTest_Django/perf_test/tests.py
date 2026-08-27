@@ -354,3 +354,93 @@ class RenderVariableTests(SimpleTestCase):
 
         self.assertIn('assert resp.status_code == 200', output)
         self.assertIn('assert resp.json()["code"] == 0', output)
+
+
+from django.test import TestCase  # noqa: E402
+from django.contrib.auth.models import User  # noqa: E402
+from projects.models import Project  # noqa: E402
+from .models import (  # noqa: E402
+    PerfTestScenario, PerfTestRequest, PerfTestPlan,
+    PerfTestExecution, PerfTestNode,
+)
+from .distributed import (  # noqa: E402
+    nodes_available, claim_task, apply_progress, apply_report, build_task_payload,
+)
+
+
+class DistributedSchedulingTest(TestCase):
+    """分布式调度：认领、无任务、进度/结果落库、离线回退（需 DB，Docker 阶段运行）。"""
+
+    def setUp(self):
+        self.user = User.objects.create_user('dist', 'dist@t.com', 'pw')
+        self.project = Project.objects.create(name='dist-proj', owner=self.user)
+        self.scenario = PerfTestScenario.objects.create(
+            name='s', project=self.project, created_by=self.user, source='interface'
+        )
+        PerfTestRequest.objects.create(
+            scenario=self.scenario, name='r', method='GET', url='/x'
+        )
+        self.plan = PerfTestPlan.objects.create(
+            scenario=self.scenario, users=5, spawn_rate=1, duration=10
+        )
+        self.node = PerfTestNode.objects.create(name='n1', host='h', status='online')
+
+    def _pending_execution(self):
+        return PerfTestExecution.objects.create(
+            scenario=self.scenario, node=self.node, status='pending'
+        )
+
+    def test_nodes_available_only_online(self):
+        self.assertTrue(nodes_available(self.node))
+        self.node.status = 'offline'
+        self.assertFalse(nodes_available(self.node))
+        self.assertFalse(nodes_available(None))
+
+    def test_claim_task_returns_payload_and_marks_running(self):
+        execution = self._pending_execution()
+        claimed, payload = claim_task(self.node.id)
+        self.assertEqual(claimed.id, execution.id)
+        self.assertIn('locustfile', payload)
+        self.assertIn('execution_id', payload)
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, 'running')
+
+    def test_claim_task_no_task_when_none_pending(self):
+        claimed, payload = claim_task(self.node.id)
+        self.assertIsNone(payload)
+
+    def test_claim_task_skips_offline_node(self):
+        self._pending_execution()
+        self.node.status = 'offline'
+        self.node.save()
+        claimed, payload = claim_task(self.node.id)
+        self.assertIsNone(payload)
+
+    @staticmethod
+    def _metrics():
+        return {'total_requests': 10, 'total_failures': 0, 'error_rate': 0,
+                'avg_response_time': 100, 'total_rps': 10}
+
+    def test_apply_report_completes_execution(self):
+        execution = self._pending_execution()
+        execution.start()
+        report_id = apply_report(execution.id, self._metrics(), [{'time': 1, 'rps': 5}])
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, 'completed')
+        self.assertEqual(execution.progress, 100)
+        self.assertIsNotNone(report_id)
+
+    def test_apply_report_failure_marks_failed(self):
+        execution = self._pending_execution()
+        execution.start()
+        apply_report(execution.id, {}, [], error='boom')
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, 'failed')
+        self.assertEqual(execution.error_message, 'boom')
+
+    def test_apply_progress_updates_running_only(self):
+        execution = self._pending_execution()
+        execution.start()
+        apply_progress(execution.id, 42.0, 7, 5)
+        execution.refresh_from_db()
+        self.assertEqual(execution.progress, 42.0)
