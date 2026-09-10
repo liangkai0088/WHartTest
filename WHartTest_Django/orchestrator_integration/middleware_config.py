@@ -28,6 +28,8 @@ from requirements.context_limits import (
     get_context_limit_from_llm,
 )
 
+from .response_language import CHINESE_SUMMARY_PROMPT
+
 logger = logging.getLogger(__name__)
 
 
@@ -718,6 +720,16 @@ def get_tool_retry_middleware(
 # ============== 摘要中间件配置 ==============
 
 
+class ChineseSummarizationMiddleware(SummarizationMiddleware):
+    # Keep the graph node name stable for existing conversation checkpoints.
+    name = "SummarizationMiddleware"
+
+    def _build_new_messages(self, summary):
+        from langchain_core.messages import HumanMessage
+
+        return [HumanMessage(content=f"以下是此前对话的上下文摘要：\n\n{summary}")]
+
+
 def get_summarization_middleware(
     model=None,  # 可以是字符串或 BaseChatModel 实例
     trigger_tokens: int = 96000,  # 128k 的 75%
@@ -771,8 +783,9 @@ def get_summarization_middleware(
         effective_trigger, trigger_tokens, overhead, trim_limit,
     )
 
-    return SummarizationMiddleware(
+    return ChineseSummarizationMiddleware(
         model=model,
+        summary_prompt=CHINESE_SUMMARY_PROMPT,
         trigger=("tokens", effective_trigger),
         keep=("messages", keep_messages),
         token_counter=_create_token_counter(model_name),

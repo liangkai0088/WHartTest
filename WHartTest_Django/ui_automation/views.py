@@ -1131,34 +1131,72 @@ def trigger_batch_execution(request):
         if len(case_ids) > 3:
             batch_name += f" 等{len(case_ids)}个用例"
 
-    batch = UiBatchExecutionRecord.objects.create(
-        name=batch_name,
-        total_cases=len(case_ids),
-        status=1,
-        trigger_type=trigger_type,
-        executor=request.user,
-        start_time=tz.now(),
-    )
+    # Link before dispatch: the actuator can return a result before this HTTP
+    # request reaches the worker. Locking also deduplicates repeated requests.
+    with transaction.atomic():
+        execution = None
+        task_execution_id = request.data.get('task_execution_id')
+        if task_execution_id is not None:
+            from rest_framework.serializers import IntegerField
+            from task_center.models import TaskExecution
+
+            task_execution_id = IntegerField(min_value=1).run_validation(task_execution_id)
+            execution = TaskExecution.objects.select_for_update().filter(
+                pk=task_execution_id, task__creator=request.user,
+                task__module='ui_automation',
+            ).first()
+            if execution is None:
+                return Response({'error': '任务执行记录不存在或无权访问'}, status=status.HTTP_403_FORBIDDEN)
+            if execution.ui_batch_id:
+                return Response({
+                    'status': 'success', 'code': 200, 'message': '批次已提交',
+                    'data': {'batch_id': execution.ui_batch_id, 'total_cases': execution.ui_batch.total_cases},
+                })
+            if execution.status != 'running':
+                return Response({'error': '任务执行记录已结束'}, status=status.HTTP_409_CONFLICT)
+            if set(case_ids) != set(execution.task.ui_testcases.values_list('id', flat=True)):
+                return Response({'error': '用例列表与任务配置不一致'}, status=status.HTTP_400_BAD_REQUEST)
+            if UiTestCase.objects.filter(id__in=case_ids, project_id=execution.task.project_id).count() != len(set(case_ids)):
+                return Response({'error': '关联用例必须属于任务所在项目'}, status=status.HTTP_400_BAD_REQUEST)
+            trigger_type = execution.trigger_type
+
+        batch = UiBatchExecutionRecord.objects.create(
+            name=batch_name, total_cases=len(case_ids), status=1,
+            trigger_type=trigger_type, executor=request.user, start_time=tz.now(),
+        )
+        if execution is not None:
+            execution.ui_batch = batch
+            execution.save(update_fields=['ui_batch'])
 
     args = {
         'case_ids': case_ids,
         'actuator_id': actuator_id,
         'batch_id': batch.id,
+        'trigger_type': trigger_type,
     }
 
     # 通过 WebSocket 发送给执行器
-    async_to_sync(actuator.send_json)(SocketDataModel(
-        code=ResponseCode.SUCCESS,
-        msg='execute_batch',
-        user='system',
-        is_notice=NoticeType.ACTUATOR,
-        data=QueueModel(
-            func_name=UiSocketEnum.TEST_CASE_BATCH,
-            func_args=args,
-        ),
-    ))
+    try:
+        async_to_sync(actuator.send_json)(SocketDataModel(
+            code=ResponseCode.SUCCESS,
+            msg='execute_batch',
+            user='system',
+            is_notice=NoticeType.ACTUATOR,
+            data=QueueModel(
+                func_name=UiSocketEnum.TEST_CASE_BATCH,
+                func_args=args,
+            ),
+        ))
+    except Exception:
+        batch.status = 4
+        batch.failed_cases = batch.total_cases
+        batch.end_time = tz.now()
+        batch.save(update_fields=['status', 'failed_cases', 'end_time'])
+        raise
 
     return Response({
         'status': 'success',
+        'code': 200,
+        'message': '批量执行已提交',
         'data': {'batch_id': batch.id, 'total_cases': len(case_ids)},
     })

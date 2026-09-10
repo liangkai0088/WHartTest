@@ -536,12 +536,14 @@ const onSearch = () => {
 
 const onPageChange = (page: number) => {
   pagination.current = page
+  selectedRowKeys.value = []
   fetchTestCases()
 }
 
 const onPageSizeChange = (pageSize: number) => {
   pagination.pageSize = pageSize
   pagination.current = 1
+  selectedRowKeys.value = []
   fetchTestCases()
 }
 

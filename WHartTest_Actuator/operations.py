@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Callable
 
 from playwright.async_api import Page, Locator, expect
 
+from runtime_env import resolve_upload_file
+
 logger = logging.getLogger('actuator')
 
 
@@ -232,6 +234,39 @@ class FillOperation(OperationHandler):
 
     async def execute(self, page: Page, locator: Locator, params: Dict, context: Any) -> OperationResult:
         value = params.get('value', '')
+
+        # 文件上传框: 填充字符串语义自动升级为文件上传（通用规则，不针对具体页面）
+        is_file_input = False
+        try:
+            is_file_input = bool(await locator.evaluate(
+                "el => el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'file'"
+            ))
+        except Exception:
+            is_file_input = False
+
+        if is_file_input:
+            if not value or not str(value).strip():
+                return OperationResult(success=False, message='上传文件路径为空')
+            file_path = resolve_upload_file(str(value))
+            if not file_path:
+                return OperationResult(success=False, message=f'未找到上传文件: {value}')
+            try:
+                await locator.set_input_files(file_path)
+                return OperationResult(success=True, message='文件上传成功（file input 自动填充）')
+            except Exception as e:
+                if 'not an HTMLInputElement' in str(e):
+                    try:
+                        async with page.expect_file_chooser() as fc_info:
+                            await locator.click()
+                        chooser = await fc_info.value
+                        await chooser.set_files(file_path)
+                        return OperationResult(success=True, message='文件上传成功（file chooser）')
+                    except Exception as chooser_error:
+                        logger.warning("文件上传失败（file chooser）: %s", chooser_error)
+                        return OperationResult(success=False, message='文件上传失败，请检查文件是否存在或权限')
+                logger.warning("文件上传失败: %s", e)
+                return OperationResult(success=False, message='文件上传失败，请检查文件是否存在或权限')
+
         await locator.fill(str(value))
         return OperationResult(success=True, message='填充成功')
 
@@ -340,6 +375,107 @@ class HoverOperation(OperationHandler):
         return OperationResult(success=True, message='悬停成功')
 
 
+class DragToOperation(OperationHandler):
+    """拖拽元素到目标元素操作"""
+
+    @property
+    def name(self) -> str:
+        return 'drag_to'
+
+    @property
+    def description(self) -> str:
+        return '拖拽元素到目标元素'
+
+    async def execute(self, page: Page, locator: Locator, params: Dict, context: Any) -> OperationResult:
+        try:
+            target = self._resolve_target_locator(page, params)
+        except Exception as exc:
+            logger.warning("drag_to 解析目标元素失败: %s", exc)
+            target = None
+
+        if target is None:
+            return OperationResult(
+                success=False,
+                message='drag_to 缺少目标:ope_value 需提供 target_locator_type+target_locator_value 或 target_text',
+            )
+
+        # 源元素:支持 handle 约束拖拽(vuedraggable/Sortable 必须从手柄起拖才生效)
+        source = locator
+        handle_selector = params.get('source_handle')
+        if handle_selector:
+            source = locator.locator(str(handle_selector)).first
+
+        # 优先使用 Playwright 原生 drag_to；HTML5 DnD 场景常不响应，降级手动鼠标序列
+        try:
+            await source.drag_to(target)
+            return OperationResult(success=True, message='拖拽成功')
+        except Exception as drag_error:
+            logger.warning("drag_to 原生拖拽失败，降级鼠标序列: %s", drag_error)
+            try:
+                await source.hover()
+                await page.mouse.down()
+                box = await target.bounding_box()
+                if not box:
+                    return OperationResult(success=False, message='drag_to 目标不可见，无法计算坐标')
+                await page.mouse.move(
+                    box['x'] + box['width'] / 2,
+                    box['y'] + box['height'] / 2,
+                    steps=10,
+                )
+                await page.mouse.up()
+                return OperationResult(success=True, message='拖拽成功')
+            except Exception as fallback_error:
+                return OperationResult(success=False, message=f'drag_to 执行失败: {fallback_error}')
+
+    @staticmethod
+    def _resolve_target_locator(page: Page, params: Dict) -> Optional[Locator]:
+        """从操作参数解析目标元素定位器。
+
+        优先 target_locator_type + target_locator_value（可带 target_locator_index），
+        其次 target_text，再次 target（作为 CSS 选择器）。
+        """
+        locator_type = params.get('target_locator_type') or params.get('locator_type')
+        locator_value = params.get('target_locator_value') or params.get('locator_value')
+        target_text = params.get('target_text')
+        selector = params.get('target')
+
+        if locator_value:
+            normalized_type = (str(locator_type or '').lower().replace('-', '_'))
+            target = DragToOperation._get_target_locator(page, normalized_type, str(locator_value))
+        elif target_text:
+            target = page.get_by_text(str(target_text))
+        elif selector:
+            target = page.locator(str(selector))
+        else:
+            return None
+
+        locator_index = params.get('target_locator_index')
+        if locator_index is not None:
+            try:
+                target = target.nth(int(locator_index))
+            except (TypeError, ValueError):
+                pass
+        return target
+
+    @staticmethod
+    def _get_target_locator(container: Any, locator_type: str, locator_value: str) -> Locator:
+        """根据定位类型获取目标元素 Locator（与通用引擎定位器映射一致）"""
+        locator_map = {
+            'xpath': lambda: container.locator(f"xpath={locator_value}"),
+            'css': lambda: container.locator(locator_value),
+            'id': lambda: container.locator(f"#{locator_value}"),
+            'name': lambda: container.locator(f"[name='{locator_value}']"),
+            'text': lambda: container.get_by_text(locator_value),
+            'role': lambda: container.get_by_role(locator_value),
+            'placeholder': lambda: container.get_by_placeholder(locator_value),
+            'label': lambda: container.get_by_label(locator_value),
+            'testid': lambda: container.get_by_test_id(locator_value),
+            'test_id': lambda: container.get_by_test_id(locator_value),
+            'data_testid': lambda: container.get_by_test_id(locator_value),
+        }
+        return locator_map.get(locator_type, lambda: container.locator(locator_value))()
+
+
 class FocusOperation(OperationHandler):
     """聚焦操作"""
 
@@ -385,13 +521,18 @@ class UploadOperation(OperationHandler):
         return '上传文件'
 
     async def execute(self, page: Page, locator: Locator, params: Dict, context: Any) -> OperationResult:
-        file_path = params.get('file_path', '')
+        raw_path = params.get('file_path', '')
 
-        if not file_path or not file_path.strip():
+        if not raw_path or not str(raw_path).strip():
             return OperationResult(
                 success=False,
                 message='上传文件路径为空'
             )
+
+        # 通用文件解析：绝对路径/相对路径/文件名搜索/缺失时自动生成占位夹具
+        file_path = resolve_upload_file(str(raw_path))
+        if not file_path:
+            return OperationResult(success=False, message=f'未找到上传文件: {raw_path}')
 
         # 尝试直接设置文件（file input）
         try:
@@ -709,7 +850,7 @@ class AssertCheckedOperation(OperationHandler):
 
 
 class AssertTextOperation(OperationHandler):
-    """断言元素文本"""
+    """断言元素文本（未绑定元素时退化为页面级文本断言）"""
 
     @property
     def name(self) -> str:
@@ -719,10 +860,21 @@ class AssertTextOperation(OperationHandler):
     def description(self) -> str:
         return '断言元素文本'
 
-    async def execute(self, page: Page, locator: Locator, params: Dict, context: Any) -> OperationResult:
+    @property
+    def requires_locator(self) -> bool:
+        # 支持页面级文本断言: 未绑定元素时校验整页文本
+        return False
+
+    async def execute(self, page: Page, locator: Optional[Locator], params: Dict, context: Any) -> OperationResult:
         expected = params.get('expected', '')
-        await expect(locator).to_have_text(expected)
-        return OperationResult(success=True, message=f'断言通过: 文本为 "{expected}"')
+        if not expected:
+            return OperationResult(success=False, message='缺少断言参数: expected')
+        if locator is not None:
+            await expect(locator).to_have_text(expected)
+            return OperationResult(success=True, message=f'断言通过: 元素文本为 "{expected}"')
+        # 页面级文本断言
+        await expect(page.get_by_text(expected).first).to_be_visible()
+        return OperationResult(success=True, message=f'页面断言通过: 页面存在文本 "{expected}"')
 
 
 class AssertValueOperation(OperationHandler):
@@ -743,7 +895,7 @@ class AssertValueOperation(OperationHandler):
 
 
 class AssertContainTextOperation(OperationHandler):
-    """断言元素包含文本"""
+    """断言元素包含文本（未绑定元素时退化为页面级包含断言）"""
 
     @property
     def name(self) -> str:
@@ -753,10 +905,21 @@ class AssertContainTextOperation(OperationHandler):
     def description(self) -> str:
         return '断言元素包含文本'
 
-    async def execute(self, page: Page, locator: Locator, params: Dict, context: Any) -> OperationResult:
+    @property
+    def requires_locator(self) -> bool:
+        # 支持页面级包含断言: 未绑定元素时校验整页文本
+        return False
+
+    async def execute(self, page: Page, locator: Optional[Locator], params: Dict, context: Any) -> OperationResult:
         expected = params.get('expected', '')
-        await expect(locator).to_contain_text(expected)
-        return OperationResult(success=True, message=f'断言通过: 包含文本 "{expected}"')
+        if not expected:
+            return OperationResult(success=False, message='缺少断言参数: expected')
+        if locator is not None:
+            await expect(locator).to_contain_text(expected)
+            return OperationResult(success=True, message=f'断言通过: 元素包含文本 "{expected}"')
+        # 页面级包含断言
+        await expect(page.get_by_text(expected).first).to_be_visible()
+        return OperationResult(success=True, message=f'页面断言通过: 页面包含文本 "{expected}"')
 
 
 class AssertUrlOperation(OperationHandler):
@@ -825,6 +988,7 @@ class OperationRegistry:
             CheckOperation(),
             UncheckOperation(),
             HoverOperation(),
+            DragToOperation(),
             FocusOperation(),
             PressOperation(),
             UploadOperation(),

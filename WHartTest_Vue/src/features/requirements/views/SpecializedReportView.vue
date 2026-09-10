@@ -145,10 +145,17 @@
                   v-for="issue in filteredIssues"
                   :key="issue.id || issue.description"
                   class="issue-item"
+                  :class="{ 'issue-resolved': issue.is_resolved }"
                 >
                   <div class="issue-header-row">
                     <a-tag :color="getPriorityColor(issue.severity || issue.priority)" size="small">
                       {{ issue.severity || issue.priority || '中' }}
+                    </a-tag>
+                    <a-tag v-if="issue.is_resolved" color="green" size="small">
+                      {{ pageText.resolved }}
+                    </a-tag>
+                    <a-tag v-else color="gray" size="small">
+                      {{ pageText.unresolved }}
                     </a-tag>
                     <span v-if="issue.category" class="issue-category">{{ issue.category }}</span>
                     <span v-if="issue.location" class="issue-location">📍 {{ issue.location }}</span>
@@ -157,6 +164,29 @@
                   <p v-if="issue.description && issue.title" class="issue-description">{{ issue.description }}</p>
                   <div v-if="issue.suggestion" class="issue-suggestion">
                     <strong>💡 建议：</strong>{{ issue.suggestion }}
+                  </div>
+                  <div v-if="issue.is_resolved && issue.resolution_note" class="issue-resolution-note">
+                    <strong>{{ pageText.resolutionNote }}：</strong>{{ issue.resolution_note }}
+                  </div>
+                  <div class="issue-actions">
+                    <a-button
+                      v-if="!issue.is_resolved"
+                      type="text"
+                      size="mini"
+                      @click="openResolveModal(issue)"
+                    >
+                      {{ pageText.markResolved }}
+                    </a-button>
+                    <a-button
+                      v-else
+                      type="text"
+                      size="mini"
+                      status="danger"
+                      :loading="unresolvingIssueId === issue.id"
+                      @click="handleUnresolve(issue)"
+                    >
+                      {{ pageText.revokeResolved }}
+                    </a-button>
                   </div>
                 </div>
               </div>
@@ -178,6 +208,24 @@
     <div v-else class="empty-state">
       <a-empty description="暂无评审报告数据" />
     </div>
+
+    <!-- 标记已解决弹窗 -->
+    <a-modal
+      v-model:visible="resolveModalVisible"
+      :title="pageText.resolveIssueTitle"
+      :ok-loading="resolveLoading"
+      @ok="confirmResolve"
+    >
+      <a-form :model="resolveForm" layout="vertical">
+        <a-form-item :label="pageText.resolutionNote">
+          <a-textarea
+            v-model="resolveForm.resolution_note"
+            :placeholder="pageText.resolveNotePlaceholder"
+            :auto-size="{ minRows: 3, maxRows: 6 }"
+          />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -190,7 +238,7 @@ import {
   IconDownload
 } from '@arco-design/web-vue/es/icon';
 import { useAppI18n } from '@/composables/useAppI18n';
-import { RequirementDocumentService } from '../services/requirementService';
+import { RequirementDocumentService, ReviewIssueService } from '../services/requirementService';
 import ReportVersionSelector from '../components/ReportVersionSelector.vue';
 
 // 路由
@@ -211,6 +259,17 @@ const pageText = computed(() => (
         feasibility: 'feasibility analysis',
         clarity: 'clarity analysis',
         logic: 'logic analysis',
+        resolved: 'Resolved',
+        unresolved: 'Unresolved',
+        markResolved: 'Mark resolved',
+        revokeResolved: 'Revoke',
+        resolutionNote: 'Resolution note',
+        resolveIssueTitle: 'Resolve issue',
+        resolveNotePlaceholder: 'Enter resolution note (optional)',
+        resolveSuccess: 'Issue resolved',
+        resolveFailed: 'Failed to resolve issue',
+        unresolveSuccess: 'Resolution revoked',
+        unresolveFailed: 'Failed to revoke resolution',
       }
     : {
         analysisDimensions: '专项分析维度',
@@ -223,6 +282,17 @@ const pageText = computed(() => (
         feasibility: '可行性分析',
         clarity: '清晰度分析',
         logic: '逻辑分析',
+        resolved: '已解决',
+        unresolved: '未解决',
+        markResolved: '标记已解决',
+        revokeResolved: '撤销解决',
+        resolutionNote: '处理说明',
+        resolveIssueTitle: '标记问题已解决',
+        resolveNotePlaceholder: '请输入处理说明（可选）',
+        resolveSuccess: '问题已标记为已解决',
+        resolveFailed: '标记解决失败',
+        unresolveSuccess: '已撤销解决',
+        unresolveFailed: '撤销解决失败',
       }
 ));
 
@@ -232,6 +302,13 @@ const document = ref<any>(null);
 const selectedAnalysisType = ref<string>('completeness');
 const priorityFilter = ref<string>('');
 const selectedReportId = ref<string>(''); // 当前选中的报告ID
+
+// 问题解决状态管理
+const resolveModalVisible = ref(false);
+const resolveLoading = ref(false);
+const resolvingIssueId = ref<string | null>(null);
+const unresolvingIssueId = ref<string | null>(null);
+const resolveForm = ref({ resolution_note: '' });
 
 // 专项分析类型定义
 const analysisTypes = computed(() => [
@@ -388,6 +465,65 @@ const handleVersionChange = (reportId: string) => {
 
 const exportReport = () => {
   Message.info('导出功能开发中...');
+};
+
+// 问题解决状态处理
+const openResolveModal = (issue: any) => {
+  resolvingIssueId.value = issue.id;
+  resolveForm.value.resolution_note = '';
+  resolveModalVisible.value = true;
+};
+
+const confirmResolve = async () => {
+  if (!resolvingIssueId.value) return;
+  resolveLoading.value = true;
+  try {
+    const response = await ReviewIssueService.resolveIssue(
+      resolvingIssueId.value,
+      resolveForm.value.resolution_note || undefined
+    );
+    if (response.status === 'success' && response.data) {
+      updateIssueInState(response.data);
+      Message.success(pageText.value.resolveSuccess);
+      resolveModalVisible.value = false;
+    } else {
+      Message.error(response.message || pageText.value.resolveFailed);
+    }
+  } catch {
+    Message.error(pageText.value.resolveFailed);
+  } finally {
+    resolveLoading.value = false;
+  }
+};
+
+const handleUnresolve = async (issue: any) => {
+  if (!issue.id) return;
+  unresolvingIssueId.value = issue.id;
+  try {
+    const response = await ReviewIssueService.unresolveIssue(issue.id);
+    if (response.status === 'success' && response.data) {
+      updateIssueInState(response.data);
+      Message.success(pageText.value.unresolveSuccess);
+    } else {
+      Message.error(response.message || pageText.value.unresolveFailed);
+    }
+  } catch {
+    Message.error(pageText.value.unresolveFailed);
+  } finally {
+    unresolvingIssueId.value = null;
+  }
+};
+
+// 更新本地问题状态（遍历专项分析找到对应 issue 并替换）
+const updateIssueInState = (updatedIssue: any) => {
+  if (!selectedReport.value?.specialized_analyses) return;
+  const analysisKey = `${selectedAnalysisType.value}_analysis`;
+  const analysis = selectedReport.value.specialized_analyses[analysisKey];
+  if (!analysis?.issues) return;
+  const index = analysis.issues.findIndex((i: any) => i.id === updatedIssue.id);
+  if (index !== -1) {
+    analysis.issues[index] = { ...analysis.issues[index], ...updatedIssue };
+  }
 };
 
 // 生命周期
@@ -827,5 +963,34 @@ onMounted(() => {
   justify-content: center;
   align-items: center;
   height: 400px;
+}
+
+/* 问题解决状态 */
+.issue-resolved {
+  opacity: 0.75;
+  border-color: #b7eb8f;
+  background: #f6ffed;
+}
+
+.issue-resolution-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #f6ffed;
+  border-left: 3px solid #52c41a;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #4e5969;
+  line-height: 1.6;
+}
+
+.issue-resolution-note strong {
+  color: #52c41a;
+}
+
+.issue-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

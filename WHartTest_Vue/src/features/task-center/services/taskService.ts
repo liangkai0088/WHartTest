@@ -7,7 +7,7 @@ import { useAuthStore } from '@/store/authStore';
 export type TaskStatus = 'disabled' | 'running' | 'executing';
 export type ScheduleType = 'once' | 'hourly' | 'daily' | 'weekly';
 export type TaskModule = 'ui_automation' | 'test_suite';
-export type TriggerType = 'scheduled' | 'manual' | 'api';
+export type TriggerType = 'scheduled' | 'manual' | 'api' | 'retry';
 export type ExecutionStatus = 'running' | 'success' | 'failed';
 
 export interface ScheduledTask {

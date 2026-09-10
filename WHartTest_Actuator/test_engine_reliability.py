@@ -385,6 +385,67 @@ class EngineReliabilityTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIn("后续步骤已停止", result.message)
 
+    def test_testcase_without_executable_steps_fails_before_browser_start(self):
+        async def run():
+            executor = PlaywrightExecutor()
+            executor.browser_session_with_trace = Mock()
+            result = await executor.execute_test_case(
+                TestCaseConfig(
+                    case_id=1,
+                    case_name="empty case",
+                    page_steps=[
+                        PageStepConfig(
+                            page_step_id=6,
+                            page_url="http://localhost/login",
+                            page_name="超级管理员登录",
+                            steps=[],
+                        ),
+                        PageStepConfig(
+                            page_step_id=7,
+                            page_url="http://localhost/requirements",
+                            page_name="访问多个项目的需求文档",
+                            steps=[],
+                        ),
+                    ],
+                )
+            )
+            return result, executor.browser_session_with_trace.called
+
+        result, browser_started = asyncio.run(run())
+
+        self.assertFalse(browser_started)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.total_steps, 0)
+        self.assertIn("未配置可执行步骤", result.message)
+        self.assertIn("超级管理员登录", result.message)
+
+    def test_page_step_navigation_fails_fast_on_auth_redirect(self):
+        async def run():
+            executor = PlaywrightExecutor()
+            page = AsyncMock()
+            page.url = "about:blank"
+            page.wait_for_load_state = AsyncMock()
+
+            async def goto(url, wait_until=None):
+                page.url = "http://localhost/login?redirect=/requirements"
+                response = Mock()
+                response.status = 200
+                return response
+
+            page.goto = AsyncMock(side_effect=goto)
+            await executor._navigate_to_page_step_url(
+                page,
+                PageStepConfig(
+                    page_step_id=7,
+                    page_url="http://localhost/requirements",
+                    page_name="需求文档",
+                    steps=[StepConfig(step_id=1, operation_type="click", locator_type="text", locator_value="上传需求文档")],
+                ),
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "页面步骤 URL 被鉴权重定向"):
+            asyncio.run(run())
+
     def test_unsupported_step_type_returns_clear_message(self):
         async def run():
             executor = PlaywrightExecutor()

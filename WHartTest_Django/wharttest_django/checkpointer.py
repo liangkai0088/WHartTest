@@ -86,9 +86,18 @@ def get_sync_checkpointer():
 
 def delete_checkpoints_by_thread_id(thread_id: str) -> int:
     """
-    根据 thread_id 删除 checkpoints
-    
-    返回删除的记录数
+    根据 thread_id 删除该会话的全部 LangGraph checkpoint 数据
+
+    LangGraph Postgres 存储跨三张表：
+    - checkpoint_writes: 挂起/中间写入（含 thread_id、checkpoint_id）
+    - checkpoint_blobs:  实际 channel 数据，含完整消息快照（按 thread_id 归属）
+    - checkpoints:       checkpoint 元数据
+
+    仅删除 checkpoints 会在 checkpoint_blobs / checkpoint_writes 留下孤儿数据
+    （每次会话轮次都会把整份消息历史写进 blob，是磁盘占用的大头），
+    因此这里在三张表上按 thread_id 一次性删除。
+
+    返回删除的记录数（三张表 rowcount 之和）
     """
     if get_database_type() == 'postgres':
         import psycopg2
@@ -97,10 +106,14 @@ def delete_checkpoints_by_thread_id(thread_id: str) -> int:
             conn = psycopg2.connect(conn_string)
             try:
                 cursor = conn.cursor()
+                cursor.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (thread_id,))
+                writes_deleted = cursor.rowcount
+                cursor.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (thread_id,))
+                blobs_deleted = cursor.rowcount
                 cursor.execute("DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,))
-                deleted_count = cursor.rowcount
+                checkpoints_deleted = cursor.rowcount
                 conn.commit()
-                return deleted_count
+                return checkpoints_deleted + blobs_deleted + writes_deleted
             finally:
                 conn.close()
         except psycopg2.errors.UndefinedTable:

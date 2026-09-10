@@ -161,6 +161,7 @@
                 <a-option value="click">{{ stepText.clickOption }}</a-option>
                 <a-option value="dblclick">{{ stepText.dblclickOption }}</a-option>
                 <a-option value="hover">{{ stepText.hoverOption }}</a-option>
+                <a-option value="drag_to">{{ stepText.dragToOption }}</a-option>
                 <a-option value="focus">{{ stepText.focusOption }}</a-option>
               </a-optgroup>
               <a-optgroup :label="stepText.groupKeyboard">
@@ -432,6 +433,7 @@ const OPE_KEY_LABELS: Record<string, string> = {
   click: '点击',
   dblclick: '双击',
   hover: '悬停',
+  drag_to: '拖拽到目标',
   focus: '聚焦',
   fill: '填充',
   type: '输入',
@@ -515,6 +517,7 @@ const stepText = computed(() => isEnglish.value
       clickOption: 'Click (click)',
       dblclickOption: 'Double click (dblclick)',
       hoverOption: 'Hover (hover)',
+      dragToOption: 'Drag to target (drag_to)',
       focusOption: 'Focus (focus)',
       fillOption: 'Fill (fill)',
       typeOption: 'Type (type)',
@@ -633,6 +636,7 @@ const stepText = computed(() => isEnglish.value
       clickOption: '点击 (click)',
       dblclickOption: '双击 (dblclick)',
       hoverOption: '悬停 (hover)',
+      dragToOption: '拖拽到目标 (drag_to)',
       focusOption: '聚焦 (focus)',
       fillOption: '填充 (fill)',
       typeOption: '输入 (type)',
@@ -728,6 +732,7 @@ const opeKeyLabelsEn: Record<string, string> = {
   click: 'Click',
   dblclick: 'Double click',
   hover: 'Hover',
+  drag_to: 'Drag to target',
   focus: 'Focus',
   fill: 'Fill',
   type: 'Type',

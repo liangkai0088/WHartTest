@@ -14,7 +14,7 @@ from ui_automation.models import (
     UiPageStepsDetailed,
     UiTestCase,
 )
-from ui_automation.serializers import UiPageStepsExecuteSerializer
+from ui_automation.serializers import UiPageStepsExecuteSerializer, UiTestCaseListSerializer, UiTestCaseSerializer
 from file_management.models import FileAsset, FileManagementSetting, FileReference
 
 
@@ -76,6 +76,26 @@ class UiPageStepsExecuteDataTests(TestCase):
         self.assertEqual(detail['locator_value_3'], 'Submit')
         self.assertTrue(detail['is_iframe'])
         self.assertEqual(detail['iframe_locator'], 'iframe.login-frame')
+
+    def test_testcase_step_count_uses_executable_detail_count(self):
+        second_page_step = UiPageSteps.objects.create(
+            project=self.project,
+            page=self.page,
+            module=self.module,
+            name='Empty Step Group',
+            creator=self.user,
+        )
+        test_case = UiTestCase.objects.create(
+            project=self.project,
+            module=self.module,
+            name='Case With Empty Group',
+            creator=self.user,
+        )
+        UiCaseStepsDetailed.objects.create(test_case=test_case, page_step=self.page_step, case_sort=0)
+        UiCaseStepsDetailed.objects.create(test_case=test_case, page_step=second_page_step, case_sort=1)
+
+        self.assertEqual(UiTestCaseListSerializer(test_case).data['step_count'], 1)
+        self.assertEqual(UiTestCaseSerializer(test_case).data['step_count'], 1)
 
     def test_delete_referenced_element_is_rejected(self):
         client = APIClient()

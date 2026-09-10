@@ -4,6 +4,7 @@ from django_filters.rest_framework import (
 )  # 导入 DjangoFilterBackend
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.http import HttpResponse
@@ -786,7 +787,20 @@ class TestCaseModuleViewSet(viewsets.ModelViewSet):
         # 将项目实例添加到序列化器上下文，用于验证
         serializer.context["project"] = project
         # 保存模块，设置创建人和项目
-        serializer.save(creator=self.request.user, project=project)
+        try:
+            serializer.save(creator=self.request.user, project=project)
+        except Exception as exc:
+            if "unique constraint" in str(exc).lower() or "duplicate key" in str(exc).lower():
+                raise ValidationError({"name": "模块名称已存在"})
+            raise
+
+    def perform_update(self, serializer):
+        try:
+            serializer.save()
+        except Exception as exc:
+            if "unique constraint" in str(exc).lower() or "duplicate key" in str(exc).lower():
+                raise ValidationError({"name": "模块名称已存在"})
+            raise
 
     def perform_destroy(self, instance):
         """

@@ -144,6 +144,7 @@ class TaskExecution(models.Model):
         SCHEDULED = 'scheduled', _('定时调度')
         MANUAL = 'manual', _('手动执行')
         API = 'api', _('API 触发')
+        RETRY = 'retry', _('重试')
 
     class ExecutionStatus(models.TextChoices):
         RUNNING = 'running', _('执行中')
@@ -168,6 +169,22 @@ class TaskExecution(models.Model):
     finished_at = models.DateTimeField(_('结束时间'), null=True, blank=True)
     log = models.TextField(_('执行日志'), blank=True, default='')
     error_message = models.TextField(_('错误信息'), blank=True, default='')
+
+    ui_batch = models.OneToOneField(
+        'ui_automation.UiBatchExecutionRecord', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='task_execution', verbose_name=_('UI执行批次'),
+    )
+    suite_execution = models.OneToOneField(
+        'testcases.TestExecution', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='scheduled_task_execution', verbose_name=_('套件执行记录'),
+    )
+    retry_of = models.OneToOneField(
+        'self', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='retry_execution', verbose_name=_('重试来源'),
+    )
+    retry_attempt = models.PositiveSmallIntegerField(_('当前重试次数'), default=0)
+    retry_limit = models.PositiveSmallIntegerField(_('本轮重试上限'), default=0)
+    retry_interval = models.PositiveSmallIntegerField(_('本轮重试间隔(分钟)'), default=1)
 
     # Celery 追踪
     celery_task_id = models.CharField(

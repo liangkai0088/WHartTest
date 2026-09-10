@@ -67,6 +67,13 @@ class TaskConsumer:
         self._stop_event = asyncio.Event()
         self._current_user: Optional[str] = None
 
+        # 启动时清理本地过期 Trace 文件（保留天数通过 TRACE_RETENTION_DAYS 配置）
+        try:
+            trace_retention_days = int(os.environ.get('TRACE_RETENTION_DAYS', '7') or 7)
+        except (TypeError, ValueError):
+            trace_retention_days = 7
+        self._cleanup_expired_trace_zips(retention_days=trace_retention_days)
+
         # 启动时清理过期文件（超过7天）
         self._cleanup_expired_files(
             [
@@ -104,6 +111,32 @@ class TaskConsumer:
 
         if cleaned_count > 0:
             logger.info(f"已清理 {cleaned_count} 个超过 {max_age_days} 天的过期文件")
+
+    def _cleanup_expired_trace_zips(self, retention_days: int = 7):
+        """清理本地超过保留天数的 Trace *.zip 文件，并统计释放字节数"""
+        trace_dir = getattr(self.config, 'trace_dir', './data/traces') if self.config else './data/traces'
+        dir_path = Path(trace_dir)
+        if not dir_path.exists():
+            return
+
+        now = time.time()
+        max_age_seconds = retention_days * 24 * 60 * 60
+        cleaned_count = 0
+        freed_bytes = 0
+        for zip_path in dir_path.glob('*.zip'):
+            if not zip_path.is_file():
+                continue
+            try:
+                st = zip_path.stat()
+                if now - st.st_mtime > max_age_seconds:
+                    freed_bytes += st.st_size
+                    zip_path.unlink()
+                    cleaned_count += 1
+            except Exception as e:
+                logger.warning(f"清理过期 Trace 失败 {zip_path}: {e}")
+
+        if cleaned_count > 0:
+            logger.info(f"已清理 {cleaned_count} 个超过 {retention_days} 天的过期 Trace 文件，释放 {freed_bytes} 字节")
 
     async def _get_api_token(self) -> Optional[str]:
         """获取API认证token"""
@@ -462,6 +495,24 @@ class TaskConsumer:
             summary_result = None
             await self._release_memory_after_task()
 
+    def _page_step_result_sender(self):
+        """构造页面步骤结果回调：逐页面步骤上报执行状态。
+
+        用于用例/批量执行路径，让后端同步更新页面步骤执行状态。
+        """
+
+        async def send_page_step_result(summary: dict):
+            try:
+                await self.ws_client.send_result(
+                    'u_page_step_result',
+                    summary,
+                    self._current_user,
+                )
+            except Exception as e:
+                logger.warning(f'发送页面步骤结果失败: {e}')
+
+        return send_page_step_result
+
     async def execute_test_case(self, args: dict):
         """执行测试用例"""
         case_id = args.get('case_id')
@@ -469,6 +520,7 @@ class TaskConsumer:
         batch_id = args.get('batch_id')
         executor_id = args.get('executor_id')
         executor_name = args.get('executor_name')
+        trigger_type = args.get('trigger_type', 'manual')
 
         if not case_id:
             logger.error("缺少case_id参数")
@@ -519,11 +571,15 @@ class TaskConsumer:
                         'batch_id': batch_id,
                         'executor_id': executor_id,
                         'executor_name': executor_name,
+                        'trigger_type': trigger_type,
                     },
                     self._current_user,
                 )
                 return
-            result = await self.executor.execute_test_case(config)
+            result = await self.executor.execute_test_case(
+                config,
+                on_page_step_result=self._page_step_result_sender(),
+            )
 
             # 上传截图并替换路径
             result = await self._process_result_screenshots(result)
@@ -540,6 +596,7 @@ class TaskConsumer:
             result_data = result.model_dump()
             if batch_id:
                 result_data['batch_id'] = batch_id
+            result_data['trigger_type'] = trigger_type
             # 添加执行人信息
             if executor_id:
                 result_data['executor_id'] = executor_id
@@ -567,6 +624,7 @@ class TaskConsumer:
         batch_id = args.get('batch_id')
         executor_id = args.get('executor_id')
         executor_name = args.get('executor_name')
+        trigger_type = args.get('trigger_type', 'manual')
         # 从配置获取并发数
         max_concurrent = getattr(self.config, 'max_concurrent', 3) if self.config else 3
         if not case_ids:
@@ -615,6 +673,7 @@ class TaskConsumer:
                         'batch_id': batch_id,
                         'executor_id': executor_id,
                         'executor_name': executor_name,
+                        'trigger_type': trigger_type,
                     },
                     self._current_user,
                 )
@@ -641,6 +700,7 @@ class TaskConsumer:
                 result_data = result.model_dump()
                 if batch_id:
                     result_data['batch_id'] = batch_id
+                result_data['trigger_type'] = trigger_type
                 # 添加执行人信息
                 if executor_id:
                     result_data['executor_id'] = executor_id
@@ -660,7 +720,8 @@ class TaskConsumer:
             await self.executor.execute_batch_concurrent(
                 configs,
                 max_concurrent=max_concurrent,
-                on_result=on_result
+                on_result=on_result,
+                on_page_step_result=self._page_step_result_sender(),
             )
             logger.info("批量执行完成")
         finally:
@@ -1321,6 +1382,7 @@ class TaskConsumer:
             page_name=data.get('name', ''),  # 页面步骤名称
             steps=steps,
             env_config=env_config,
+            project_id=data.get('project'),
         )
 
     def _build_test_case_config(self, data: dict, env_config: Optional[dict] = None, data_processor: Optional[DataProcessor] = None) -> TestCaseConfig:
@@ -1350,6 +1412,7 @@ class TaskConsumer:
             case_name=data.get('name', ''),
             page_steps=page_steps,
             env_config=env_config,
+            project_id=data.get('project'),
         )
 
     def stop(self):

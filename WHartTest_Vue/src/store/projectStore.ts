@@ -40,6 +40,19 @@ export const useProjectStore = defineStore('project', () => {
     }
   };
 
+  // 从 URL 查询参数读取项目ID（?project=<id>），执行器/自动化入口用它固定项目上下文
+  const getUrlProjectId = (): number | null => {
+    try {
+      const raw = new URLSearchParams(window.location.search).get('project');
+      if (!raw) return null;
+      const id = parseInt(raw, 10);
+      return Number.isNaN(id) ? null : id;
+    } catch (error) {
+      console.warn('读取URL项目参数失败:', error);
+      return null;
+    }
+  };
+
   // 将项目ID保存到localStorage
   const saveProjectId = (projectId: number) => {
     try {
@@ -60,12 +73,20 @@ export const useProjectStore = defineStore('project', () => {
       if (response.success && response.data) {
         projectList.value = response.data;
         
-        // 优先尝试恢复之前保存的项目
-        const savedProjectId = getSavedProjectId();
         let projectToSelect: Project | null = null;
-        
-        if (savedProjectId) {
-          projectToSelect = projectList.value.find(p => p.id === savedProjectId) || null;
+
+        // 最高优先级:URL 参数 ?project=<id>
+        const urlProjectId = getUrlProjectId();
+        if (urlProjectId !== null) {
+          projectToSelect = projectList.value.find(p => p.id === urlProjectId) || null;
+        }
+
+        // 其次:恢复之前保存的项目
+        if (!projectToSelect) {
+          const savedProjectId = getSavedProjectId();
+          if (savedProjectId) {
+            projectToSelect = projectList.value.find(p => p.id === savedProjectId) || null;
+          }
         }
         
         // 如果没有保存的项目或保存的项目不存在，则选择第一个项目

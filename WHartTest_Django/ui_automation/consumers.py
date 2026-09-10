@@ -132,15 +132,38 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         except (AuthenticationFailed, InvalidToken, TokenError):
             return AnonymousUser()
 
+    @sync_to_async
+    def _authenticate_api_key(self, api_key: str):
+        from api_keys.models import APIKey
+
+        try:
+            api_key_obj = APIKey.objects.select_related("user").get(key=api_key)
+        except APIKey.DoesNotExist:
+            return AnonymousUser()
+        if not api_key_obj.is_valid():
+            return AnonymousUser()
+        return api_key_obj.user
+
     async def _get_authenticated_user(self, query_params):
         user = self.scope.get('user') or AnonymousUser()
         if getattr(user, 'is_authenticated', False):
             return user
 
         token = query_params.get('token', [None])[0]
-        if not token:
-            return AnonymousUser()
-        return await self._authenticate_token(token)
+        if token:
+            user = await self._authenticate_token(token)
+            if getattr(user, 'is_authenticated', False):
+                return user
+
+        api_key = query_params.get('api_key', [None])[0]
+        if not api_key:
+            for name, value in self.scope.get('headers', []):
+                if name == b'x-api-key':
+                    api_key = value.decode('utf-8', 'ignore')
+                    break
+        if api_key:
+            return await self._authenticate_api_key(api_key)
+        return AnonymousUser()
 
     async def connect(self):
         """建立连接"""
@@ -572,7 +595,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 batch_id=batch_id,
                 executor=executor,
                 status=status,
-                trigger_type='manual',
+                trigger_type=args.get('trigger_type') if args.get('trigger_type') in ('manual', 'scheduled', 'api', 'retry') else 'manual',
                 step_results=steps,
                 screenshots=screenshots,
                 trace_path=trace_path,

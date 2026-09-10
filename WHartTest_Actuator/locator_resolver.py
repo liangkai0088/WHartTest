@@ -39,7 +39,7 @@ class LocatorResolver:
         self,
         healing_enabled: bool = True,
         similarity_threshold: float = 0.78,
-        max_candidates: int = 120
+        max_candidates: int = 500
     ):
         """初始化定位器解析器
 
@@ -219,9 +219,57 @@ class LocatorResolver:
             if locator_index is not None:
                 locator = locator.nth(locator_index)
 
-            # 等待元素可见（快速验证）
+            # 等待元素可见（快速验证）。文件上传框常被样式隐藏，
+            # 对 input[type=file] 放宽为 attached 即可（通用规则）。
             timeout = 5000 if is_primary else 2000
-            await locator.wait_for(state="visible", timeout=timeout)
+            try:
+                await locator.wait_for(state="visible", timeout=timeout)
+            except Exception as visible_error:
+                # 严格模式多匹配冲突（页面存在多个相同文本元素，如弹窗/模板副本）：
+                # 通用语义降级为取第一个可见匹配
+                if 'strict mode violation' in str(visible_error):
+                    visible_match = None
+                    try:
+                        matches = await locator.all()
+                        for candidate in matches[:20]:
+                            try:
+                                if await candidate.is_visible():
+                                    visible_match = candidate
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        visible_match = None
+                    if visible_match is not None:
+                        if self.last_diagnostics is not None:
+                            self.last_diagnostics['resolved_by'] = 'first_visible_of_many'
+                            self.last_diagnostics['resolved_locator'] = {
+                                'type': locator_type,
+                                'value': locator_value,
+                            }
+                        logger.info(
+                            f"定位器多匹配，已自动选择第一个可见元素: [{locator_type}={locator_value}]"
+                        )
+                        return visible_match
+
+                hidden_file_input = False
+                try:
+                    hidden_file_input = bool(await locator.evaluate(
+                        "el => el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'file'"
+                    ))
+                except Exception:
+                    hidden_file_input = False
+                if not hidden_file_input:
+                    raise
+                if self.last_diagnostics is not None:
+                    self.last_diagnostics['resolved_by'] = 'hidden_file_input'
+                    self.last_diagnostics['resolved_locator'] = {
+                        'type': locator_type,
+                        'value': locator_value,
+                        'hidden': True
+                    }
+                logger.info(f"定位器成功（隐藏文件输入）: [{locator_type}={locator_value}]")
+                return locator
 
             if self.last_diagnostics is not None:
                 self.last_diagnostics['resolved_by'] = 'primary' if is_primary else 'fallback'
@@ -388,7 +436,8 @@ class LocatorResolver:
         """
         selector = (
             'button, a, input, textarea, select, [role="button"], [role="link"], '
-            '[role="menuitem"], [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
+            '[role="menuitem"], [contenteditable="true"], [tabindex]:not([tabindex="-1"]), '
+            '.arco-dropdown-option, .arco-select-option'
         )
 
         locator = container.locator(selector)

@@ -184,7 +184,7 @@ export interface UiCaseStepsDetailed {
 }
 
 /** 触发类型 */
-export type TriggerType = 'manual' | 'scheduled' | 'api'
+export type TriggerType = 'manual' | 'scheduled' | 'api' | 'retry'
 
 /** 执行记录 */
 export interface UiExecutionRecord {
