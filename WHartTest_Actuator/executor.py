@@ -19,12 +19,13 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Optional, Union
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, FrameLocator, Page, Playwright, expect
 
 from models import StepResultModel, CaseResultModel
 from operations import has_embedded_navigation_target
+from runtime_env import auto_fixtures_snapshot, cleanup_generated_upload_files
 
 # 通用引擎模块（新增）
 USE_UNIVERSAL_ENGINE = os.getenv('USE_UNIVERSAL_ENGINE', 'true').lower() == 'true'
@@ -87,6 +88,7 @@ class PageStepConfig:
     steps: list[StepConfig] = field(default_factory=list)
     env_config: Optional[dict] = None
     skip_url_check: bool = False  # 是否跳过URL验证（允许前端自由重定向）
+    project_id: Optional[int] = None  # 用例/页面步骤所属项目ID，用于导航时固定前端项目上下文
 
 
 @dataclass
@@ -96,6 +98,7 @@ class TestCaseConfig:
     case_name: str
     page_steps: list[PageStepConfig] = field(default_factory=list)
     env_config: Optional[dict] = None
+    project_id: Optional[int] = None  # 用例所属项目ID，用于导航时固定前端项目上下文
 
 
 class PlaywrightExecutor:
@@ -568,9 +571,50 @@ class PlaywrightExecutor:
         return resolved
 
     @staticmethod
+    def _append_project_param(url: str, project_id: Optional[int]) -> str:
+        """给 URL 追加 ?project=<id> 查询参数(替换已存在的 project 参数)。"""
+        if not url or not project_id:
+            return url
+        parsed = urlsplit(url)
+        items = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != 'project']
+        items.append(('project', str(project_id)))
+        query = urlencode(items)
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+
+    @staticmethod
+    def _strip_project_param(url: str) -> str:
+        """从 URL 中移除 project 查询参数(仅用于比较,不修改实际导航)。"""
+        if not url:
+            return url
+        parsed = urlsplit(url)
+        items = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != 'project']
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(items), parsed.fragment))
+
+    @staticmethod
+    def _on_page_or_child(current_url: str, expected_url: str) -> bool:
+        """判断当前URL是否等于目标URL或位于其路径子级（如列表页URL对应的详情页）。
+
+        用于页面步骤导航前：当前页面已经是目标页面或其子页面时不再重复导航，
+        避免把点击进入的详情页重新导航回列表页。
+        """
+        current = urlsplit(PlaywrightExecutor._strip_project_param(current_url))
+        expected = urlsplit(PlaywrightExecutor._strip_project_param(expected_url))
+        if (expected.scheme, expected.netloc) != (current.scheme, current.netloc):
+            return False
+        exp_path = expected.path.rstrip('/') or '/'
+        cur_path = current.path.rstrip('/') or '/'
+        if not (cur_path == exp_path or cur_path.startswith(exp_path + '/')):
+            return False
+        # 查询参数/锚点必须一致才视为同一页面：
+        # 查询参数常携带页面状态（如 ?redirect= 自动打开登录弹窗），不一致时应重新导航
+        if current.query != expected.query or current.fragment != expected.fragment:
+            return False
+        return True
+
+    @staticmethod
     def _navigation_matches(expected_url: str, actual_url: str) -> bool:
-        expected = urlsplit(expected_url)
-        actual = urlsplit(actual_url)
+        expected = urlsplit(PlaywrightExecutor._strip_project_param(expected_url))
+        actual = urlsplit(PlaywrightExecutor._strip_project_param(actual_url))
         if (expected.scheme, expected.netloc, expected.path.rstrip('/') or '/') != (
             actual.scheme, actual.netloc, actual.path.rstrip('/') or '/'
         ):
@@ -585,8 +629,9 @@ class PlaywrightExecutor:
             return False
         return has_embedded_navigation_target(actual_url)
 
-    async def _navigate_to_base_url(self, page: Page, base_url: str, label: str = '') -> None:
+    async def _navigate_to_base_url(self, page: Page, base_url: str, label: str = '', project_id: Optional[int] = None) -> None:
         resolved = self._resolve_page_url(base_url, base_url)
+        resolved = self._append_project_param(resolved, project_id)
         if not resolved:
             return
         logger.info(f"导航到环境 base_url{label}: {resolved}")
@@ -616,7 +661,7 @@ class PlaywrightExecutor:
             except Exception as exc:
                 raise TimeoutError(f"步骤 {step.step_id}: 点击后页面未完成跳转，当前仍在 {page.url}") from exc
 
-    async def _navigate_to_page_step_url(self, page: Page, page_step: PageStepConfig, base_url: str = '') -> None:
+    async def _navigate_to_page_step_url(self, page: Page, page_step: PageStepConfig, base_url: str = '', project_id: Optional[int] = None) -> None:
         """导航到页面步骤URL，支持灵活的重定向处理
 
         Args:
@@ -625,6 +670,8 @@ class PlaywrightExecutor:
             base_url: 环境基础URL
         """
         page_step_url = self._resolve_page_url(page_step.page_url, base_url)
+        if project_id and page_step_url:
+            page_step_url = self._append_project_param(page_step_url, project_id)
         if not page_step_url:
             logger.debug("页面步骤URL为空，跳过导航")
             return
@@ -632,9 +679,9 @@ class PlaywrightExecutor:
         current_url = page.url.rstrip('/')
         expected_url = page_step_url.rstrip('/')
 
-        # 如果已经在目标URL，跳过导航
-        if current_url == expected_url:
-            logger.debug(f"已在目标URL: {current_url}")
+        # 如果已经在目标URL或其子路径（如从列表页点击进入了详情页），跳过导航
+        if self._on_page_or_child(current_url, expected_url):
+            logger.debug(f"已在目标页面: {current_url}")
             return
 
         logger.info(f"导航到页面步骤 URL: {page_step_url}")
@@ -666,13 +713,12 @@ class PlaywrightExecutor:
 
         # 检查导航结果
         if not self._navigation_matches(page_step_url, final_url):
-            # 1. 登录重定向 - 允许继续（页面步骤可能包含登录操作）
+            # 1. 鉴权重定向 - 不猜登录流程，要求用例显式配置前置登录/鉴权步骤。
             if self._is_auth_redirect(page_step_url, final_url):
-                logger.info(
-                    f"检测到登录重定向，将继续执行页面内登录步骤: "
-                    f"期望 {page_step_url}，实际 {final_url}"
+                raise RuntimeError(
+                    f"页面步骤 URL 被鉴权重定向: 期望 {page_step_url}，实际 {final_url}。"
+                    f"请在用例中补充可复用的前置登录/鉴权页面步骤，并使用公共变量或项目凭据配置账号密码。"
                 )
-                return
 
             # 2. 同源但未到达目标页面 - 配置错误或前置导航不足，不能继续执行后续元素操作。
             if self._origin(page_step_url) == self._origin(final_url):
@@ -951,6 +997,48 @@ class PlaywrightExecutor:
         await file_chooser.set_files(file_path)
         logger.info(f"步骤 {step.step_id}: 已通过 file chooser 设置上传文件")
 
+    async def _resolve_drag_target(self, page: Page, step: StepConfig):
+        """解析 drag_to 的目标元素定位器。
+
+        优先使用 step.raw_ope_value（原始 dict），其次回退 step.params（dict）。
+        字段契约：target_locator_type + target_locator_value（可带 target_locator_index），
+        或 target_text，或 target（作为 CSS 选择器）。
+        解析失败或无目标时返回 None。
+        """
+        data = None
+        if isinstance(step.raw_ope_value, dict):
+            data = step.raw_ope_value
+        if data is None and isinstance(step.params, dict):
+            data = step.params
+        if not data:
+            return None
+
+        locator_type = data.get('target_locator_type') or data.get('locator_type')
+        locator_value = data.get('target_locator_value') or data.get('locator_value')
+        target_text = data.get('target_text')
+        selector = data.get('target')
+
+        try:
+            if locator_value:
+                target = self._get_locator(page, locator_type or 'css', str(locator_value))
+            elif target_text:
+                target = page.get_by_text(str(target_text))
+            elif selector:
+                target = page.locator(str(selector))
+            else:
+                return None
+
+            locator_index = data.get('target_locator_index')
+            if locator_index is not None:
+                try:
+                    target = target.nth(int(locator_index))
+                except (TypeError, ValueError):
+                    pass
+            return target
+        except Exception as exc:
+            logger.warning(f"步骤 {step.step_id}: drag_to 目标定位器解析失败: {exc}")
+            return None
+
     async def _execute_step(
         self,
         page: Page,
@@ -991,8 +1079,10 @@ class PlaywrightExecutor:
         # 等待时间（仅当用户明确设置 > 0 时才等待，用于特殊场景）
         # 注意：Playwright 自带 Auto-waiting，一般不需要手动等待
         if step.wait_time > 0:
-            logger.debug(f"步骤 {step.step_id}: 强制等待 {step.wait_time}s（建议设为0让Playwright自动等待）")
-            await page.wait_for_timeout(int(step.wait_time * 1000))
+            # 封顶 60 秒，防止配置异常导致长时间卡死
+            capped_wait = min(int(step.wait_time), 60)
+            logger.debug(f"步骤 {step.step_id}: 强制等待 {capped_wait}s（建议设为0让Playwright自动等待）")
+            await page.wait_for_timeout(capped_wait * 1000)
 
         # 记录开始时间
         op_start = time.time()
@@ -1163,6 +1253,30 @@ class PlaywrightExecutor:
             logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
             return True, f"元素操作 {operation} 执行成功{action_suffix}", None
 
+        if operation in ('drag_to', 'drag_and_drop'):
+            target_locator = await self._resolve_drag_target(page, step)
+            if target_locator is None:
+                return False, f"drag_to 缺少目标(ope_value 需提供 target_locator_type/target_locator_value 或 target_text)", None
+            # handle 约束拖拽(vuedraggable/Sortable 必须从手柄起拖才生效)
+            data = step.raw_ope_value if isinstance(step.raw_ope_value, dict) else (
+                step.params if isinstance(step.params, dict) else {}
+            )
+            source = locator
+            handle_sel = data.get('source_handle')
+            if handle_sel:
+                source = locator.locator(str(handle_sel)).first
+            try:
+                await source.drag_to(target_locator)
+            except Exception:
+                await source.hover()
+                await page.mouse.down()
+                box = await target_locator.bounding_box()
+                if not box:
+                    return False, "drag_to 目标不可见,无法计算坐标", None
+                await page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2, steps=10)
+                await page.mouse.up()
+            return True, f"元素操作 {operation} 执行成功{action_suffix}", None
+
         if operation in element_operations:
             action_start = time.time()
             await element_operations[operation]()
@@ -1225,8 +1339,48 @@ class PlaywrightExecutor:
                 element_found=False
             )
 
-    async def execute_test_case(self, config: TestCaseConfig) -> CaseResultModel:
-        """执行测试用例（支持 Trace 记录）"""
+    @staticmethod
+    def _empty_case_message(config: TestCaseConfig) -> str:
+        page_step_names = [ps.page_name or str(ps.page_step_id) for ps in config.page_steps]
+        if page_step_names:
+            return "用例未配置可执行步骤，请在以下页面步骤中添加操作: " + "、".join(page_step_names)
+        return "用例未配置可执行步骤，请先添加页面步骤和操作步骤"
+
+    async def _report_page_step_result(self, on_page_step_result, page_step, ps_steps, ps_status):
+        """上报单个页面步骤执行汇总（供上层同步页面步骤状态）。
+
+        通用回调设计：用例/批量路径执行时，每个页面步骤结束后回调一次，
+        由调用方决定如何消费（如 WebSocket 上报后端更新状态）。
+        """
+        if not on_page_step_result:
+            return
+        passed = sum(1 for r in ps_steps if r.status == 'success')
+        summary = {
+            'page_step_id': page_step.page_step_id,
+            'status': ps_status,
+            'message': '执行成功' if ps_status == 'success' else '执行失败',
+            'total_steps': len(ps_steps),
+            'passed_steps': passed,
+            'failed_steps': len(ps_steps) - passed,
+            'steps': [r.model_dump() for r in ps_steps],
+        }
+        try:
+            await on_page_step_result(summary)
+        except Exception as e:
+            logger.warning(f'页面步骤结果回调失败: {e}')
+
+    async def execute_test_case(
+        self,
+        config: TestCaseConfig,
+        on_page_step_result=None,
+    ) -> CaseResultModel:
+        """执行测试用例（支持 Trace 记录）
+
+        Args:
+            config: 用例配置
+            on_page_step_result: 单个页面步骤完成时的回调（可选），
+                用于逐页面步骤上报状态。
+        """
         start_time = time.time()
         step_results = []
         passed_steps = 0
@@ -1234,8 +1388,21 @@ class PlaywrightExecutor:
         first_failure_message = ''
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
 
+        if total_steps == 0:
+            return CaseResultModel(
+                case_id=config.case_id,
+                status='failed',
+                message=self._empty_case_message(config),
+                total_steps=0,
+                passed_steps=0,
+                failed_steps=1,
+                duration=time.time() - start_time,
+                steps=[],
+            )
+
         self._stop_requested = False
         trace_name = f"case_{config.case_id}"
+        _fixtures_snapshot = auto_fixtures_snapshot()
 
         try:
             # 使用带 trace 的浏览器会话
@@ -1250,7 +1417,7 @@ class PlaywrightExecutor:
                 if config.env_config:
                     base_url = config.env_config.get('base_url', '') or ''
                 if base_url:
-                    await self._navigate_to_base_url(self._page, base_url)
+                    await self._navigate_to_base_url(self._page, base_url, project_id=config.project_id)
 
                 stop_remaining_steps = False
                 for page_step in config.page_steps:
@@ -1259,93 +1426,105 @@ class PlaywrightExecutor:
                     if self._stop_requested:
                         raise Exception("用例被手动停止")
 
-                    logger.info(f"执行页面步骤: {page_step.page_name}")
+                    ps_start = len(step_results)
+                    ps_status = 'success'
+                    try:
+                        logger.info(f"执行页面步骤: {page_step.page_name}")
 
-                    # 确保使用最新的页签引用进行环境跳转检测
-                    page = self._page
-
-                    await self._navigate_to_page_step_url(page, page_step, base_url)
-
-                    # 执行页面内的步骤
-                    for step in page_step.steps:
-                        if self._stop_requested:
-                            raise Exception("用例被手动停止")
-
-                        # 确保总是使用最新的活跃页签进行操作
+                        # 确保使用最新的页签引用进行环境跳转检测
                         page = self._page
 
-                        step_start = time.time()
-                        try:
-                            success, message, step_screenshot = await self._execute_step(
-                                page,
-                                step,
-                                page_step.env_config or config.env_config,
-                            )
+                        await self._navigate_to_page_step_url(page, page_step, base_url, project_id=config.project_id)
 
-                            # 执行后重新同步页签引用，以防步骤内发生了页签切换
+                        # 执行页面内的步骤
+                        for step in page_step.steps:
+                            if self._stop_requested:
+                                raise Exception("用例被手动停止")
+
+                            # 确保总是使用最新的活跃页签进行操作
                             page = self._page
-                            step_duration = time.time() - step_start
 
-                            step_result = StepResultModel(
-                                step_id=step.step_id,
-                                status='success' if success else 'failed',
-                                message=message,
-                                description=step.description or step.operation_type,
-                                duration=step_duration,
-                                element_found=success,
-                                screenshot=step_screenshot  # 保存截图操作的路径
-                            )
-
-                            if success:
-                                passed_steps += 1
-                                logger.debug(f"  ✅ {step.description or step.operation_type}")
-                            else:
-                                failed_steps += 1
-                                first_failure_message = first_failure_message or f"第 {step.step_id} 步失败: {message}"
-                                logger.warning(f"  ❌ {step.description or step.operation_type}: {message}")
-                                # 失败时额外截图
-                                if not step_screenshot:
-                                    screenshot_path = f"{self.screenshot_dir}/fail_{config.case_id}_{step.step_id}.png"
-                                    await page.screenshot(path=screenshot_path)
-                                    step_result.screenshot = screenshot_path
-                                if self.fail_fast and not step.params.get('continue_on_failure'):
-                                    stop_remaining_steps = True
-
-                        except Exception as step_error:
-                            step_duration = time.time() - step_start
-                            failed_steps += 1
-                            error_msg = str(step_error)
-                            first_failure_message = first_failure_message or f"第 {step.step_id} 步异常: {error_msg}"
-                            logger.error(f"  ❌ {step.description or step.operation_type}: {error_msg}")
-
-                            # 失败时截图
+                            step_start = time.time()
                             try:
-                                screenshot_path = f"{self.screenshot_dir}/error_{config.case_id}_{step.step_id}.png"
-                                await page.screenshot(path=screenshot_path)
-                            except:
-                                screenshot_path = None
+                                success, message, step_screenshot = await self._execute_step(
+                                    page,
+                                    step,
+                                    page_step.env_config or config.env_config,
+                                )
 
-                            step_result = StepResultModel(
-                                step_id=step.step_id,
-                                status='failed',
-                                message=error_msg,
-                                description=step.description or step.operation_type,
-                                duration=step_duration,
-                                element_found=False,
-                                screenshot=screenshot_path
-                            )
+                                # 执行后重新同步页签引用，以防步骤内发生了页签切换
+                                page = self._page
+                                step_duration = time.time() - step_start
 
-                        step_results.append(step_result)
-                        if step_result.status == 'failed' and self.fail_fast and not step.params.get('continue_on_failure'):
-                            stop_remaining_steps = True
-                            break
+                                step_result = StepResultModel(
+                                    step_id=step.step_id,
+                                    status='success' if success else 'failed',
+                                    message=message,
+                                    description=step.description or step.operation_type,
+                                    duration=step_duration,
+                                    element_found=success,
+                                    screenshot=step_screenshot  # 保存截图操作的路径
+                                )
 
-                    # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
-                    try:
-                        await page.wait_for_load_state("load", timeout=10000)
-                        await page.wait_for_load_state("networkidle", timeout=10000)
+                                if success:
+                                    passed_steps += 1
+                                    logger.debug(f"  ✅ {step.description or step.operation_type}")
+                                else:
+                                    failed_steps += 1
+                                    first_failure_message = first_failure_message or f"第 {step.step_id} 步失败: {message}"
+                                    logger.warning(f"  ❌ {step.description or step.operation_type}: {message}")
+                                    # 失败时额外截图
+                                    if not step_screenshot:
+                                        screenshot_path = f"{self.screenshot_dir}/fail_{config.case_id}_{step.step_id}.png"
+                                        await page.screenshot(path=screenshot_path)
+                                        step_result.screenshot = screenshot_path
+                                    if self.fail_fast and not step.params.get('continue_on_failure'):
+                                        stop_remaining_steps = True
+
+                            except Exception as step_error:
+                                step_duration = time.time() - step_start
+                                failed_steps += 1
+                                error_msg = str(step_error)
+                                first_failure_message = first_failure_message or f"第 {step.step_id} 步异常: {error_msg}"
+                                logger.error(f"  ❌ {step.description or step.operation_type}: {error_msg}")
+
+                                # 失败时截图
+                                try:
+                                    screenshot_path = f"{self.screenshot_dir}/error_{config.case_id}_{step.step_id}.png"
+                                    await page.screenshot(path=screenshot_path)
+                                except:
+                                    screenshot_path = None
+
+                                step_result = StepResultModel(
+                                    step_id=step.step_id,
+                                    status='failed',
+                                    message=error_msg,
+                                    description=step.description or step.operation_type,
+                                    duration=step_duration,
+                                    element_found=False,
+                                    screenshot=screenshot_path
+                                )
+
+                            step_results.append(step_result)
+                            if step_result.status == 'failed' and self.fail_fast and not step.params.get('continue_on_failure'):
+                                stop_remaining_steps = True
+                                break
+
+                        # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
+                        try:
+                            await page.wait_for_load_state("load", timeout=10000)
+                            await page.wait_for_load_state("networkidle", timeout=10000)
+                        except Exception:
+                            logger.debug(f"页面步骤 {page_step.page_name} 执行后等待页面稳定超时，继续执行")
                     except Exception:
-                        logger.debug(f"页面步骤 {page_step.page_name} 执行后等待页面稳定超时，继续执行")
+                        ps_status = 'failed'
+                        raise
+                    finally:
+                        # 逐页面步骤上报状态（无论成功失败）
+                        ps_steps = step_results[ps_start:]
+                        await self._report_page_step_result(
+                            on_page_step_result, page_step, ps_steps, ps_status
+                        )
 
                 duration = time.time() - start_time
                 status = 'success' if failed_steps == 0 else 'failed'
@@ -1398,9 +1577,14 @@ class PlaywrightExecutor:
                 trace_path=trace_path
             )
 
+        finally:
+            # 清理本次用例执行中自动生成的占位夹具（无论成功失败）
+            cleanup_generated_upload_files(_fixtures_snapshot)
+
     async def execute_page_step(self, config: PageStepConfig) -> list[StepResultModel]:
         """执行单个页面步骤（包含多个操作）- 使用同一个浏览器会话"""
         step_results = []
+        _fixtures_snapshot = auto_fixtures_snapshot()
 
         try:
             async with self.browser_session() as page:
@@ -1412,7 +1596,7 @@ class PlaywrightExecutor:
                 if config.page_url:
                     nav_start = time.time()
                     base_url = config.env_config.get('base_url', '') if config.env_config else ''
-                    await self._navigate_to_page_step_url(page, config, base_url)
+                    await self._navigate_to_page_step_url(page, config, base_url, project_id=config.project_id)
                     logger.debug(f"页面导航 {config.page_name} 耗时 {time.time() - nav_start:.2f}s")
 
                 # 执行页面内的所有步骤
@@ -1484,15 +1668,24 @@ class PlaywrightExecutor:
                     element_found=False
                 ))
 
+        finally:
+            # 清理本次页面步骤执行中自动生成的占位夹具（无论成功失败）
+            cleanup_generated_upload_files(_fixtures_snapshot)
+
         return step_results
 
     async def _execute_case_on_context(
         self,
         context: BrowserContext,
         config: TestCaseConfig,
-        trace_enabled: bool = False
+        trace_enabled: bool = False,
+        on_page_step_result=None,
     ) -> CaseResultModel:
-        """在独立上下文中执行用例（用于并发执行）"""
+        """在独立上下文中执行用例（用于并发执行）
+
+        Args:
+            on_page_step_result: 单个页面步骤完成时的回调（可选）
+        """
         start_time = time.time()
         step_results = []
         passed_steps = 0
@@ -1501,6 +1694,21 @@ class PlaywrightExecutor:
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
         trace_path = None
         page = None
+
+        if total_steps == 0:
+            return CaseResultModel(
+                case_id=config.case_id,
+                status='failed',
+                message=self._empty_case_message(config),
+                total_steps=0,
+                passed_steps=0,
+                failed_steps=1,
+                duration=time.time() - start_time,
+                steps=[],
+                trace_path=None,
+            )
+
+        _fixtures_snapshot = auto_fixtures_snapshot()
 
         try:
             # 启动 Trace
@@ -1523,7 +1731,7 @@ class PlaywrightExecutor:
             if config.env_config:
                 base_url = config.env_config.get('base_url', '') or ''
             if base_url:
-                await self._navigate_to_base_url(page, base_url, ' [并发]')
+                await self._navigate_to_base_url(page, base_url, ' [并发]', project_id=config.project_id)
 
             stop_remaining_steps = False
             for page_step in config.page_steps:
@@ -1532,83 +1740,95 @@ class PlaywrightExecutor:
                 if self._stop_requested:
                     raise Exception("用例被手动停止")
 
-                logger.info(f"[并发] 执行页面步骤: {page_step.page_name}")
+                ps_start = len(step_results)
+                ps_status = 'success'
+                try:
+                    logger.info(f"[并发] 执行页面步骤: {page_step.page_name}")
 
-                await self._navigate_to_page_step_url(page, page_step, base_url)
+                    await self._navigate_to_page_step_url(page, page_step, base_url, project_id=config.project_id)
 
-                # 执行页面内的步骤
-                for step in page_step.steps:
-                    if self._stop_requested:
-                        raise Exception("用例被手动停止")
+                    # 执行页面内的步骤
+                    for step in page_step.steps:
+                        if self._stop_requested:
+                            raise Exception("用例被手动停止")
 
-                    step_start = time.time()
-                    try:
-                        success, message, step_screenshot = await self._execute_step(
-                            page,
-                            step,
-                            page_step.env_config or config.env_config,
-                        )
-                        step_duration = time.time() - step_start
+                        step_start = time.time()
+                        try:
+                            success, message, step_screenshot = await self._execute_step(
+                                page,
+                                step,
+                                page_step.env_config or config.env_config,
+                            )
+                            step_duration = time.time() - step_start
 
-                        step_result = StepResultModel(
-                            step_id=step.step_id,
-                            status='success' if success else 'failed',
-                            message=message,
-                            description=step.description or step.operation_type,
-                            duration=step_duration,
-                            element_found=success,
-                            screenshot=step_screenshot
-                        )
+                            step_result = StepResultModel(
+                                step_id=step.step_id,
+                                status='success' if success else 'failed',
+                                message=message,
+                                description=step.description or step.operation_type,
+                                duration=step_duration,
+                                element_found=success,
+                                screenshot=step_screenshot
+                            )
 
-                        if success:
-                            passed_steps += 1
-                        else:
+                            if success:
+                                passed_steps += 1
+                            else:
+                                failed_steps += 1
+                                first_failure_message = first_failure_message or f"第 {step.step_id} 步失败: {message}"
+                                if not step_screenshot:
+                                    screenshot_path = f"{self.screenshot_dir}/fail_{config.case_id}_{step.step_id}.png"
+                                    await page.screenshot(path=screenshot_path)
+                                    step_result.screenshot = screenshot_path
+                                step_results.append(step_result)
+                                if self.fail_fast and not step.params.get('continue_on_failure'):
+                                    stop_remaining_steps = True
+                                break
+
+                        except Exception as step_error:
+                            step_duration = time.time() - step_start
                             failed_steps += 1
-                            first_failure_message = first_failure_message or f"第 {step.step_id} 步失败: {message}"
-                            if not step_screenshot:
-                                screenshot_path = f"{self.screenshot_dir}/fail_{config.case_id}_{step.step_id}.png"
+                            error_msg = str(step_error)
+                            first_failure_message = first_failure_message or f"第 {step.step_id} 步异常: {error_msg}"
+
+                            try:
+                                screenshot_path = f"{self.screenshot_dir}/error_{config.case_id}_{step.step_id}.png"
                                 await page.screenshot(path=screenshot_path)
-                                step_result.screenshot = screenshot_path
+                            except:
+                                screenshot_path = None
+
+                            step_result = StepResultModel(
+                                step_id=step.step_id,
+                                status='failed',
+                                message=error_msg,
+                                description=step.description or step.operation_type,
+                                duration=step_duration,
+                                element_found=False,
+                                screenshot=screenshot_path
+                            )
                             step_results.append(step_result)
                             if self.fail_fast and not step.params.get('continue_on_failure'):
                                 stop_remaining_steps = True
                             break
 
-                    except Exception as step_error:
-                        step_duration = time.time() - step_start
-                        failed_steps += 1
-                        error_msg = str(step_error)
-                        first_failure_message = first_failure_message or f"第 {step.step_id} 步异常: {error_msg}"
+                        if success:
+                            step_results.append(step_result)
 
-                        try:
-                            screenshot_path = f"{self.screenshot_dir}/error_{config.case_id}_{step.step_id}.png"
-                            await page.screenshot(path=screenshot_path)
-                        except:
-                            screenshot_path = None
-
-                        step_result = StepResultModel(
-                            step_id=step.step_id,
-                            status='failed',
-                            message=error_msg,
-                            description=step.description or step.operation_type,
-                            duration=step_duration,
-                            element_found=False,
-                            screenshot=screenshot_path
-                        )
-                        step_results.append(step_result)
-                        if self.fail_fast and not step.params.get('continue_on_failure'):
-                            stop_remaining_steps = True
-                        break
-
-                    if success:
-                        step_results.append(step_result)
-
-                # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
-                try:
-                    await page.wait_for_load_state("load", timeout=10000)
-                    await page.wait_for_load_state("networkidle", timeout=10000)
+                    # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
+                    try:
+                        await page.wait_for_load_state("load", timeout=10000)
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except Exception:
+                        logger.debug(f"[并发] 页面步骤 {page_step.page_name} 执行后等待页面稳定超时，继续执行")
                 except Exception:
-                    logger.debug(f"[并发] 页面步骤 {page_step.page_name} 执行后等待页面稳定超时，继续执行")
+                    ps_status = 'failed'
+                    raise
+                finally:
+                    # 逐页面步骤上报状态（无论成功失败）
+                    ps_steps = step_results[ps_start:]
+                    await self._report_page_step_result(
+                        on_page_step_result, page_step, ps_steps, ps_status
+                    )
 
             duration = time.time() - start_time
             status = 'success' if failed_steps == 0 else 'failed'
@@ -1670,11 +1890,16 @@ class PlaywrightExecutor:
                 trace_path=trace_path
             )
 
+        finally:
+            # 清理本次用例执行中自动生成的占位夹具（无论成功失败）
+            cleanup_generated_upload_files(_fixtures_snapshot)
+
     async def execute_batch_concurrent(
         self,
         configs: list[TestCaseConfig],
         max_concurrent: int = 3,
-        on_result = None
+        on_result=None,
+        on_page_step_result=None,
     ) -> list[CaseResultModel]:
         """并发执行多个用例
 
@@ -1682,6 +1907,7 @@ class PlaywrightExecutor:
             configs: 用例配置列表
             max_concurrent: 最大并发数
             on_result: 单个用例完成时的回调函数 (可选)
+            on_page_step_result: 单个页面步骤完成时的回调函数 (可选)
 
         Returns:
             用例执行结果列表
@@ -1711,7 +1937,8 @@ class PlaywrightExecutor:
                     result = await self._execute_case_on_context(
                         context,
                         config,
-                        trace_enabled=self.trace_enabled
+                        trace_enabled=self.trace_enabled,
+                        on_page_step_result=on_page_step_result,
                     )
                     if on_result:
                         await on_result(result)

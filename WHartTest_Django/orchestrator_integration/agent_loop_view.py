@@ -57,6 +57,17 @@ from .middleware_config import (
 )
 from .models import AgentReviewRun
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
+from .response_language import (
+    is_user_visible_model_chunk,
+    with_chinese_response_instruction,
+)
+from .ui_automation_completion import (
+    ExecutionAgentState,
+    UIAutomationIncomplete,
+    build_ui_execution_contract,
+    inspect_ui_completion,
+    stream_with_ui_completion,
+)
 from .stop_signal import should_stop, clear_stop_signal
 from langgraph_integration.models import ChatSession, LLMConfig
 from langgraph_integration.views import (
@@ -68,6 +79,7 @@ from langgraph_integration.views import (
 )
 from projects.models import Project
 from prompts.models import UserPrompt
+from testcases.models import TestCase
 from mcp_tools.models import RemoteMCPConfig
 from mcp_tools.persistent_client import mcp_session_manager
 from file_management.services import validate_file_ids, build_llm_attachment_context, sync_file_references
@@ -92,6 +104,7 @@ TEST_EXECUTION_SKILL_RUNTIME_INSTRUCTION = """
 禁止因为系统提示词或历史提示词提到 `browser_navigate`、`browser_snapshot`、`browser_take_screenshot`、`save_operation_screenshots_to_the_application_case` 等未注入工具，就判定工具不可用或 UI 自动化执行器离线。
 
 必须按以下顺序执行：
+0. 执行功能用例前，先调用 `read_skill_content(skill_name="ui-automation")` 并用 `get_testcases --project_id <项目ID>` 查询关联 UI 用例；若不存在，必须用 playwright-skill 观察真实页面后创建页面、元素、页面步骤和 UI 用例，然后通过 `execute_skill_script(skill_name="ui-automation", command="python ui_automation_tools.py --action execute_testcase --testcase_id <UI用例ID> --wait_result --exec_timeout 120")` 执行，并查询 `get_execution_records --testcase_id <UI用例ID> --limit 1` 核验本次记录及终态。浏览器走查和截图仅是中间步骤，不能替代 UI 用例生成和平台执行；此流程已获授权，不得再询问是否补做。功能用例 ID 和 UI 用例 ID 不可混用，查询报错不等于没有记录。
 1. 调用 `read_skill_content(skill_name="playwright-skill")` 获取浏览器执行说明。
 2. 调用 `execute_skill_script(skill_name="playwright-skill", command=..., session_id="稳定会话ID")` 执行页面访问、验证和截图；截图必须保存到环境变量 `SCREENSHOT_DIR` 指向的目录。
 3. 如果 `playwright-skill` 明确不可用，再调用 `read_skill_content` 检查并切换到 `agent-browser-skill` 或 `playwright-cli`。
@@ -109,10 +122,16 @@ GENERATE_UI_AUTOMATION_INSTRUCTION = """
 2. 使用本次浏览器执行观察到的元素定位器、操作和断言，通过 `execute_skill_script(skill_name="ui-automation", command="python ui_automation_tools.py ...")` 创建或复用模块、页面、元素、页面步骤和 UI 测试用例。
 3. 保存 UI 页面 URL 时必须使用“项目配置地址/项目测试地址”，不要保存“浏览器执行地址”（如 host.docker.internal）；页面路径可以来自实际访问路径。
 4. 保存页面步骤时必须保留真实浏览器流程中的前置交互，例如先点击“账号登录/打开登录弹窗/展开表单/切换标签”后输入框才出现，就必须把该点击步骤按顺序保存到页面步骤中。
-5. 涉及登录账号、密码或测试数据时必须使用“项目登录凭据/用户明确给出的值/公共变量”，禁止直接复制 Skill 文档中的示例值（如 password123、admin123、example.com）。
-6. 创建前必须先查询已有模块/页面/用例，避免重复创建。
-7. 保存完成后必须调用 `get_testcases` 或 `get_testcase` 验证 UI 自动化用例已经存在。
-8. 最终 JSON 的 `summary` 中必须包含已生成/复用的 UI 自动化用例 ID；如果保存失败，必须把失败原因写入 JSON。
+5. 如果业务页面需要登录/鉴权后才能访问，必须创建或复用显式的登录/鉴权前置页面步骤，并把它作为 UI 测试用例的首个 case step；禁止假设浏览器已登录，也禁止依赖执行器自动登录。
+6. 涉及登录账号、密码或测试数据时必须使用“项目登录凭据/用户明确给出的值/公共变量”，禁止直接复制 Skill 文档中的示例值（如 password123、admin123、example.com）；如果没有可用凭据，不能生成伪造账号密码，必须在最终 JSON 的 `summary` 中说明缺少凭据配置。
+7. 登录/提交类点击如果会触发路由跳转或鉴权重定向，保存点击步骤时不能只写 `wait_after_click=true`；必须同时保存等待参数，例如 `auth_paths` 填真实登录/鉴权页路径、`wait_timeout=15000`，确保执行器等到离开鉴权页后再执行下一步。
+8. 创建前必须先查询已有模块/页面/用例，避免重复创建。
+   创建或复用 UI 用例时，必须在名称或描述中保留关联标记 `功能用例ID: <ID>`（本次功能用例 ID 已注入为 `test_case_id`）；例如 `功能用例ID: 101 - 登录验证`。这是系统自动执行该 UI 用例所必需的关联信息。
+9. 保存完成后必须调用 `get_testcases` 或 `get_testcase` 验证 UI 自动化用例已经存在。
+10. **验证存在后，必须立即自动执行该 UI 自动化用例（禁止跳过）**：先调用 `get_actuators` 确认有执行器在线；然后通过 `execute_skill_script(skill_name="ui-automation", command="python ui_automation_tools.py --action execute_testcase --testcase_id <用例ID> --wait_result --exec_timeout 120")` 执行该用例；执行完成后调用 `get_execution_records --testcase_id <用例ID> --limit 1` 查询最新执行记录，确认执行已真正跑完（成功或失败均可）。执行失败时按错误分析流程修复定位器/断言后必须重新执行一次；只有保存失败或没有在线执行器时，才允许不执行并把原因写入 JSON。
+11. 最终 JSON 的 `summary` 中必须包含：已生成/复用的 UI 自动化用例 ID、自动执行的执行记录 ID 与结果状态（成功/失败）；如果保存失败或无法执行，必须把原因写入 JSON。
+12. 点击进入的子页面（如列表页点击"详情"后到达的详情页）：后续验证若针对详情页内容，必须把该验证合并到执行点击的同一页面步骤中；如果单独为详情页创建页面步骤，其页面 URL 必须填写点击后实际到达的完整 URL（含路径与 ID），禁止填写列表页 URL。
+13. **录制步骤前必须确保浏览器项目上下文 = 用例所属项目（强制）**：浏览器导航 URL 必须带 `?project=<项目ID>` 查询参数（项目ID可查询项目信息/模块信息获得），或先用顶部项目选择器切换到目标项目；禁止在错误项目上下文录制页面步骤，否则项目相关下拉/列表内容错配，执行必然失败。
 """
 
 
@@ -136,6 +155,7 @@ def _build_container_reachable_url(project_url: str | None) -> str | None:
 def _build_test_execution_system_prompt(
     base_prompt: str | None,
     generate_playwright_script: bool = False,
+    test_case_id: int | None = None,
     project_url: str | None = None,
     project_username: str | None = None,
     project_password: str | None = None,
@@ -188,7 +208,11 @@ def _build_test_execution_system_prompt(
     prompt_parts.append(TEST_EXECUTION_SKILL_RUNTIME_INSTRUCTION)
     if generate_playwright_script:
         prompt_parts.extend([PLAYWRIGHT_SCRIPT_INSTRUCTION, GENERATE_UI_AUTOMATION_INSTRUCTION])
-    return "\n".join(part for part in prompt_parts if part)
+        if test_case_id:
+            prompt_parts.append(
+                f"\n本次关联的功能测试用例 ID 是 `{test_case_id}`。创建 UI 用例时必须在名称或描述中写入 `功能用例ID: {test_case_id}`。"
+            )
+    return with_chinese_response_instruction("\n".join(part for part in prompt_parts if part))
 
 
 def _build_sse_error_event(exc: Exception) -> Dict[str, Any]:
@@ -987,6 +1011,16 @@ class AgentLoopStreamAPIView(View):
         thread_id = f"{request.user.id}_{project_id}_{session_id}"
         file_ids = file_ids or []
         agent_review_mode = normalize_review_mode(agent_review_mode)
+        # 本次请求开始时间:用于自动执行 UI 用例的去重(本会话内 LLM 已执行过则跳过)
+        from django.utils import timezone as tz
+        request_started_at = tz.now()
+        # 固定逻辑:执行功能用例必自动生成 UI 用例并自动执行(忽略前端"生成UI用例"可选开关)
+        if test_case_id:
+            generate_playwright_script = True
+        ui_contract = await sync_to_async(build_ui_execution_contract)(
+            test_case_id=test_case_id, project_id=project_id,
+            user_id=request.user.id, started_at=request_started_at,
+        ) if test_case_id else None
         review_thresholds = normalize_review_thresholds(agent_review_options)
         try:
             attached_files = await sync_to_async(validate_file_ids)(file_ids, project, request.user)
@@ -1150,6 +1184,7 @@ class AgentLoopStreamAPIView(View):
                 effective_prompt = _build_test_execution_system_prompt(
                     effective_prompt,
                     generate_playwright_script=generate_playwright_script,
+                    test_case_id=test_case_id,
                     project_url=project_url,
                     project_username=project_username,
                     project_password=project_password,
@@ -1158,6 +1193,9 @@ class AgentLoopStreamAPIView(View):
             elif generate_playwright_script:
                 effective_prompt = (effective_prompt or "") + PLAYWRIGHT_SCRIPT_INSTRUCTION
                 logger.info("AgentLoopStreamAPI: 已追加脚本生成指令")
+
+            if not test_case_id:
+                effective_prompt = with_chinese_response_instruction(effective_prompt)
 
             # 9. 构建用户消息（支持多模态：上传图片 + HTTP(S) 图片 + 需求文档图片）
             user_message_for_llm = user_message
@@ -1213,6 +1251,7 @@ class AgentLoopStreamAPIView(View):
                     llm,
                     tools,
                     system_prompt=effective_prompt,
+                    state_schema=ExecutionAgentState,
                     checkpointer=checkpointer,
                     middleware=middleware,
                 )
@@ -1225,7 +1264,7 @@ class AgentLoopStreamAPIView(View):
                     "configurable": {"thread_id": thread_id},
                     "recursion_limit": 1000,  # 支持约500次工具调用
                 }
-                input_messages = {"messages": [user_msg]}
+                input_messages = {"messages": [user_msg], "ui_execution_contract": ui_contract}
 
                 # 13.1 发送前修复历史消息（配对错误 + 风险工具输出）
                 await _sanitize_history_before_model_call(
@@ -1244,13 +1283,16 @@ class AgentLoopStreamAPIView(View):
                 review_complete_payload = None
                 repair_content_parts: List[str] = []
                 current_agent_phase = "generation"
+                ui_completion = None
+                stream_failed = False
 
                 # 15. 流式执行
                 stream_modes = ["updates", "messages"]
 
                 try:
-                    async for stream_mode, chunk in agent.astream(
-                        input_messages, config=invoke_config, stream_mode=stream_modes
+                    async for stream_mode, chunk in stream_with_ui_completion(
+                        agent, input_messages, config=invoke_config, stream_mode=stream_modes,
+                        contract=ui_contract, session_id=session_id,
                     ):
                         # 检查用户停止信号
                         if should_stop(session_id):
@@ -1267,6 +1309,14 @@ class AgentLoopStreamAPIView(View):
                                 }
                             )
                             break
+
+                        if stream_mode == "ui_automation":
+                            ui_completion = chunk
+                            yield create_sse_data({"type": "ui_automation", **chunk})
+                            yield create_sse_data({
+                                "type": "stream", "data": "\n平台核验：" + chunk["message"] + "\n",
+                            })
+                            continue
 
                         if stream_mode == "updates":
                             # 检查中断事件 (HITL)
@@ -1480,6 +1530,8 @@ class AgentLoopStreamAPIView(View):
                                             )
 
                         elif stream_mode == "messages":
+                            if not is_user_visible_model_chunk(chunk):
+                                continue
                             # LLM Token 流式输出
                             # messages 模式返回元组 (token, metadata)
                             if isinstance(chunk, tuple) and len(chunk) >= 1:
@@ -1510,6 +1562,7 @@ class AgentLoopStreamAPIView(View):
                                     )
 
                 except Exception as e:
+                    stream_failed = True
                     friendly_error = get_user_friendly_llm_error(e)
                     if friendly_error:
                         logger.warning(
@@ -1609,6 +1662,8 @@ class AgentLoopStreamAPIView(View):
                     yield create_sse_data(
                         {"type": "complete", "status": "stopped", "steps": step_count}
                     )
+                elif stream_failed:
+                    yield create_sse_data({"type": "complete", "status": "failed", "ui_automation": ui_completion})
                 elif interrupt_detected:
                     logger.info(
                         "AgentLoopStreamAPI: Interrupt detected, returning early"
@@ -1751,7 +1806,19 @@ class AgentLoopStreamAPIView(View):
                                 }
                             )
 
-                    complete_data = {"type": "complete", "total_steps": step_count}
+                    # Reviews may mutate artifacts; recheck before emitting completion.
+                    if ui_contract and not user_stopped:
+                        ui_completion = await sync_to_async(inspect_ui_completion)(ui_contract)
+                        if not ui_completion["completed"]:
+                            yield create_sse_data({"type": "error", "message": str(UIAutomationIncomplete(ui_completion))})
+                    complete_data = {
+                        "type": "complete", "total_steps": step_count,
+                        "status": "stopped" if user_stopped else (
+                            "failed" if ui_completion and not ui_completion.get("completed") else "completed"
+                        ),
+                    }
+                    if ui_completion:
+                        complete_data["ui_automation"] = ui_completion
                     if review_complete_payload:
                         complete_data["review_pipeline"] = review_complete_payload
                     if generate_playwright_script:
@@ -1866,6 +1933,14 @@ class AgentLoopStreamAPIView(View):
         )
         if not project:
             return api_error_response("Project access denied", 403)
+
+        if test_case_id:
+            try:
+                test_case_id = int(test_case_id)
+            except (TypeError, ValueError):
+                return api_error_response("test_case_id 必须是整数", 400)
+            if not await sync_to_async(TestCase.objects.filter(id=test_case_id, project=project).exists)():
+                return api_error_response("功能用例不存在或不属于当前项目", 400)
 
         # 4.1 获取项目测试 URL 和登录凭据（从项目凭据读取）
         project_url = None
@@ -1990,6 +2065,7 @@ class AgentLoopStreamAPIView(View):
         error_details = None
         interrupt_info = None
         script_generation = None
+        ui_completion = None
         review_pipeline = None
 
         try:
@@ -2051,6 +2127,7 @@ class AgentLoopStreamAPIView(View):
                                 "action_requests": event.get("action_requests", []),
                             }
                         elif event_type == "complete":
+                            ui_completion = event.get("ui_automation")
                             if event.get("script_generation"):
                                 script_generation = event.get("script_generation")
                             if event.get("review_pipeline"):
@@ -2078,6 +2155,8 @@ class AgentLoopStreamAPIView(View):
 
             if script_generation:
                 response_data["script_generation"] = script_generation
+            if ui_completion:
+                response_data["ui_automation"] = ui_completion
 
             if review_pipeline:
                 response_data["review_pipeline"] = review_pipeline
@@ -2238,6 +2317,19 @@ class AgentLoopResumeAPIView(View):
 
         try:
             async with get_async_checkpointer() as checkpointer:
+                thread_id = f"{user.id}_{project_id}_{session_id}" if project_id else session_id
+                config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 1000}
+                checkpoint = await checkpointer.aget_tuple(config)
+                ui_contract = (
+                    checkpoint.checkpoint.get("channel_values", {}).get("ui_execution_contract")
+                    if checkpoint else None
+                )
+                if ui_contract and (
+                    ui_contract.get("user_id") != user.id
+                    or str(ui_contract.get("project_id")) != str(project_id)
+                ):
+                    raise ValueError("UI 自动化执行上下文与当前用户或项目不一致")
+
                 # 3. 获取 LLM 配置
                 active_config = await sync_to_async(
                     LLMConfig.objects.filter(is_active=True).first
@@ -2317,7 +2409,7 @@ class AgentLoopResumeAPIView(View):
                     builtin_tools = get_builtin_tools(
                         user_id=user.id,
                         project_id=int(project_id) if project_id else 0,
-                        test_case_id=None,
+                        test_case_id=ui_contract["test_case_id"] if ui_contract else None,
                         chat_session_id=session_id,
                     )
                     tools.extend(builtin_tools)
@@ -2334,13 +2426,27 @@ class AgentLoopResumeAPIView(View):
                 resume_system_prompt = None
                 try:
                     chat_session = await sync_to_async(
-                        ChatSession.objects.filter(session_id=session_id).select_related("prompt").first
+                        ChatSession.objects.filter(session_id=session_id, user=user).select_related("prompt").first
                     )()
                     if chat_session and chat_session.prompt and chat_session.prompt.content:
                         resume_system_prompt = chat_session.prompt.content
                 except Exception:
                     pass
 
+                if ui_contract:
+                    from projects.models import ProjectCredential
+                    credential = await sync_to_async(
+                        ProjectCredential.objects.filter(project_id=project_id).first
+                    )()
+                    resume_system_prompt = _build_test_execution_system_prompt(
+                        resume_system_prompt, generate_playwright_script=True,
+                        test_case_id=ui_contract["test_case_id"],
+                        project_url=credential.system_url if credential else None,
+                        project_username=credential.username if credential else None,
+                        project_password=credential.password if credential else None,
+                    )
+                else:
+                    resume_system_prompt = with_chinese_response_instruction(resume_system_prompt)
                 tool_names = [t.name for t in tools] if tools else []
                 middleware = await sync_to_async(get_middleware_from_config)(
                     active_config,
@@ -2356,6 +2462,8 @@ class AgentLoopResumeAPIView(View):
                 agent = create_agent(
                     llm,
                     tools,
+                    system_prompt=resume_system_prompt,
+                    state_schema=ExecutionAgentState,
                     checkpointer=checkpointer,
                     middleware=middleware,
                 )
@@ -2381,12 +2489,26 @@ class AgentLoopResumeAPIView(View):
                 # 8. 步骤跟踪状态
                 step_count = 0
                 interrupt_detected = False
+                user_stopped = False
+                stream_failed = False
+                ui_completion = None
 
                 # 9. 流式执行
                 try:
-                    async for stream_mode, chunk in agent.astream(
-                        command, config=config, stream_mode=["updates", "messages"]
+                    async for stream_mode, chunk in stream_with_ui_completion(
+                        agent, command, config=config, stream_mode=["updates", "messages"],
+                        contract=ui_contract, session_id=session_id,
                     ):
+                        if should_stop(session_id):
+                            user_stopped = True
+                            clear_stop_signal(session_id)
+                            yield create_sse_data({"type": "stopped", "message": "已停止生成"})
+                            break
+                        if stream_mode == "ui_automation":
+                            ui_completion = chunk
+                            yield create_sse_data({"type": "ui_automation", **chunk})
+                            yield create_sse_data({"type": "stream", "data": "\n平台核验：" + chunk["message"] + "\n"})
+                            continue
                         if stream_mode == "updates":
                             # 检查中断事件 (HITL) - resume 后可能又触发新的中断
                             if isinstance(chunk, dict) and "__interrupt__" in chunk:
@@ -2548,6 +2670,8 @@ class AgentLoopResumeAPIView(View):
                                             )
 
                         elif stream_mode == "messages":
+                            if not is_user_visible_model_chunk(chunk):
+                                continue
                             # LLM Token 流式输出
                             # messages 模式返回元组 (token, metadata)
                             if isinstance(chunk, tuple) and len(chunk) >= 1:
@@ -2570,6 +2694,7 @@ class AgentLoopResumeAPIView(View):
                                     )
 
                 except Exception as e:
+                    stream_failed = True
                     friendly_error = get_user_friendly_llm_error(e)
                     if friendly_error:
                         logger.warning(
@@ -2650,6 +2775,8 @@ class AgentLoopResumeAPIView(View):
                             "type": "complete",
                             "total_steps": step_count,
                             "decision": decision_type,
+                            "status": "stopped" if user_stopped else ("failed" if stream_failed else "completed"),
+                            "ui_automation": ui_completion,
                         }
                     )
 

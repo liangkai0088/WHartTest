@@ -491,7 +491,8 @@ async function getPageStructure(page) {
  */
 async function describePageForAI(page) {
   const structure = await getPageStructure(page);
-  let desc = `## Page: ${structure.title}\nURL: ${structure.url}\n\n`;
+  const displayUrl = structure.url.replace(/host\.docker\.internal/g, 'localhost');
+  let desc = `## Page: ${structure.title}\nURL: ${displayUrl}\n\n`;
 
   if (structure.headings.length > 0) {
     desc += `### Headings\n`;

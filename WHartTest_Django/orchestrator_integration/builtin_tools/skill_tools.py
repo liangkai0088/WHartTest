@@ -186,8 +186,14 @@ def _prepare_skill_screenshots_dir(
         os.makedirs(screenshots_dir, exist_ok=True)
         return screenshots_dir
 
+    # 无 chat_session_id 时不清理：会话上下文未传播（如恢复线程/批量模式）时
+    # 清空会删除当前对话先前步骤已捕获的截图，导致后续 upload 步骤“文件不存在”。
+    if not chat_session_id:
+        os.makedirs(screenshots_dir, exist_ok=True)
+        return screenshots_dir
+
     session_marker = os.path.join(screenshots_dir, ".chat_session")
-    current_chat_id = chat_session_id or "default"
+    current_chat_id = chat_session_id
     should_clear = False
 
     if os.path.exists(screenshots_dir):
@@ -237,8 +243,13 @@ def _prepare_skill_artifacts_dir(
         os.makedirs(artifacts_dir, exist_ok=True)
         return artifacts_dir
 
+    # 同截图目录：无 chat_session_id 时不清理，避免误删当前会话产物。
+    if not chat_session_id:
+        os.makedirs(artifacts_dir, exist_ok=True)
+        return artifacts_dir
+
     session_marker = os.path.join(artifacts_dir, ".chat_session")
-    current_chat_id = chat_session_id or "default"
+    current_chat_id = chat_session_id
     should_clear = False
 
     if os.path.exists(artifacts_dir):
@@ -449,6 +460,15 @@ def _get_playwright_session_manager() -> PlaywrightSessionManager:
     return _playwright_session_manager
 
 
+def get_skill_api_key() -> str:
+    """Resolve the same API identity for Skill execution and result verification."""
+    return (
+        getattr(settings, "WHARTTEST_API_KEY", None)
+        or os.environ.get("WHARTTEST_API_KEY")
+        or "wharttest-default-mcp-key-2025"
+    )
+
+
 def get_skill_tools(
     user_id: int,
     project_id: Optional[int] = None,
@@ -548,11 +568,7 @@ def get_skill_tools(
             env["WHARTTEST_BACKEND_URL"] = getattr(
                 settings, "WHARTTEST_BACKEND_URL", "http://localhost:8000"
             )
-            env["WHARTTEST_API_KEY"] = getattr(
-                settings,
-                "WHARTTEST_API_KEY",
-                "wharttest-default-mcp-key-2025",
-            ) or "wharttest-default-mcp-key-2025"
+            env["WHARTTEST_API_KEY"] = get_skill_api_key()
 
             case_dir_key = None
             if current_test_case_id:
@@ -849,12 +865,26 @@ def get_skill_tools(
                 for idx, cmd in enumerate(commands):
                     results[idx] = execute_single(idx, cmd)
 
+            # 命令内部失败（退出码非 0）时返回的文本以固定前缀开头；
+            # 批量汇总必须将其计为失败，否则 LLM 会误信“全部成功”而继续使用缺失数据。
+            def _is_failed_result(r: dict[str, object]) -> bool:
+                if r is None:
+                    return True
+                if "error" in r:
+                    return True
+                result = r.get("result")
+                if isinstance(result, str) and (
+                    result.startswith("命令执行失败")
+                    or result.startswith("错误:")
+                    or result.startswith("错误：")
+                ):
+                    return True
+                return False
+
             success_count = sum(
-                1
-                for r in results
-                if r is not None and "result" in r and "error" not in r
+                1 for r in results if not _is_failed_result(r)
             )
-            error_count = len(results) - success_count
+            error_count = sum(1 for r in results if _is_failed_result(r))
 
             logger.info(
                 f"[execute_skill_script] 批量完成: {success_count} 成功, {error_count} 失败"

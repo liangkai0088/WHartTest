@@ -10,6 +10,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import time
 import requests
 from pathlib import Path
@@ -821,6 +822,29 @@ def main():
     parser.add_argument("--auto_delete_zero_refs", help="引用为0时自动删除 (true/false)")
 
     args = parser.parse_args()
+
+    # LLM 生成命令时可能对非 ASCII 字符输出 \uXXXX 转义（JSON 风格）。
+    # 标量参数此前未经解码直接入库，导致用例名称/前置条件/备注等
+    # 保存为原始转义串（步骤字段因走 json.loads 而正常）。
+    # 统一在入口处解码所有字符串参数。
+    def _decode_unicode_escapes(value: str) -> str:
+        if not value:
+            return value
+        return re.sub(
+            r"\\u([0-9a-fA-F]{4})",
+            lambda m: chr(int(m.group(1), 16)),
+            value,
+        )
+
+    for _field in (
+        "name", "precondition", "notes", "steps", "title", "description",
+        "search", "page_url", "file_path", "file_paths", "output_path",
+        "output_dir",
+    ):
+        _value = getattr(args, _field, None)
+        if isinstance(_value, str):
+            setattr(args, _field, _decode_unicode_escapes(_value))
+
     result = ACTIONS[args.action](args)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

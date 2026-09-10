@@ -21,6 +21,7 @@
           <a-option value="manual">{{ triggerLabels.manual }}</a-option>
           <a-option value="scheduled">{{ triggerLabels.scheduled }}</a-option>
           <a-option value="api">{{ triggerLabels.api }}</a-option>
+          <a-option value="retry">{{ triggerLabels.retry }}</a-option>
         </a-select>
         <a-button type="outline" @click="onSearch">
           <template #icon><icon-refresh /></template>
@@ -218,6 +219,7 @@ const pageText = computed(() => (
         executionVideo: 'Execution video',
         manual: 'Manual',
         scheduled: 'Scheduled',
+        retry: 'Retry',
         api: 'API Trigger',
         caseNameColumn: 'Case Name',
         executorColumn: 'Executor',
@@ -259,6 +261,7 @@ const pageText = computed(() => (
         executionVideo: '执行录像',
         manual: '手动执行',
         scheduled: '定时执行',
+        retry: '重试',
         api: 'API 触发',
         caseNameColumn: '用例名称',
         executorColumn: '执行人',
@@ -292,12 +295,14 @@ const statusColors: Record<ExecutionStatus | 4, string> = {
 const triggerLabels = computed<Record<string, string>>(() => ({
   manual: pageText.value.manual,
   scheduled: pageText.value.scheduled,
+  retry: pageText.value.retry,
   api: pageText.value.api,
 }))
 
 const triggerColors: Record<string, string> = {
   manual: 'arcoblue',
   scheduled: 'purple',
+  retry: 'orange',
   api: 'cyan',
 }
 

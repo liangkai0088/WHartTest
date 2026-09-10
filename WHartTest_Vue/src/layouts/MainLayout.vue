@@ -145,17 +145,17 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/task-center')">{{ tasksMenuLabel }}</a>
           </a-menu-item>
 
-          <a-menu-item key="execution-dashboard" v-if="false">
+          <a-menu-item key="execution-dashboard" v-if="hasExecutionDashboardPermission">
             <template #icon><icon-dashboard /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/dashboard/execution')">{{ executionDashboardMenuLabel }}</a>
           </a-menu-item>
 
-          <a-menu-item key="code-analysis" v-if="false">
+          <a-menu-item key="code-analysis" v-if="hasCodeAnalysisPermission">
             <template #icon><icon-code-square /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/code-analysis')">{{ codeAnalysisMenuLabel }}</a>
           </a-menu-item>
 
-          <a-menu-item key="web-qa" v-if="false">
+          <a-menu-item key="web-qa" v-if="hasWebQaPermission">
             <template #icon><icon-robot /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/web-qa')">{{ webQaMenuLabel }}</a>
           </a-menu-item>
@@ -468,6 +468,22 @@ const hasFileManagementPermission = computed(() => {
   return authStore.currentUser?.is_staff ||
          authStore.hasPermission('file_management.view_fileasset') ||
          authStore.hasPermission('file_management.add_fileasset');
+});
+
+const hasExecutionDashboardPermission = computed(() => {
+  return hasUiAutomationPermission.value || hasApiTestingPermission.value;
+});
+
+const hasCodeAnalysisPermission = computed(() => {
+  return authStore.currentUser?.is_staff ||
+         authStore.hasPermission('code_analysis.view_codeproject') ||
+         authStore.hasPermission('code_analysis.view_specanalysistask');
+});
+
+const hasWebQaPermission = computed(() => {
+  return authStore.currentUser?.is_staff ||
+         authStore.hasPermission('web_qa.view_qasuite') ||
+         authStore.hasPermission('web_qa.view_qarun');
 });
 
 const hasUsersPermission = computed(() => {
@@ -904,10 +920,19 @@ onMounted(async () => {
   margin: 5px 5px 10px 10px;
   border-radius: 8px;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
-  height: auto;
+  height: calc(100vh - 86px); /* 与 .content 同公式，直接基于视口，避免百分比高度解析失败 */
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: hidden;
+}
+
+/* arco 内部包裹层：改为 flex 列，让菜单可伸缩、底部按钮正常占位 */
+:deep(.arco-layout-sider-children) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 
 .menu {
@@ -919,7 +944,7 @@ onMounted(async () => {
   overflow-x: hidden;
   text-align: left;
   flex: 1;
-  max-height: calc(100% - 70px);
+  min-height: 0;
   padding-bottom: 10px;
 }
 
@@ -1075,8 +1100,8 @@ onMounted(async () => {
 }
 
 .sider-footer {
-  position: absolute;
-  bottom: 0;
+  position: static; /* 改为正常文档流，占据 flex 列底部，不再绝对定位覆盖菜单 */
+  flex-shrink: 0;
   width: 100%;
   padding: 10px 0;
   display: flex;

@@ -56,7 +56,7 @@ class EnhancedExecutor:
         self.locator_config = {
             'healing_enabled': True,
             'similarity_threshold': 0.78,
-            'max_candidates': 120,
+            'max_candidates': 500,
         }
 
         # 向后兼容适配器

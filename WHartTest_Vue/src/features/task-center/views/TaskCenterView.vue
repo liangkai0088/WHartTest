@@ -233,6 +233,7 @@ const pageText = computed(() => (
         success: 'Success',
         failed: 'Failed',
         scheduled: 'Scheduled',
+        retry: 'Retry',
         manual: 'Manual',
         api: 'API',
         taskName: 'Task Name',
@@ -296,6 +297,7 @@ const pageText = computed(() => (
         success: '成功',
         failed: '失败',
         scheduled: '定时调度',
+        retry: '重试',
         manual: '手动执行',
         api: 'API 触发',
         taskName: '任务名称',
@@ -389,6 +391,7 @@ const execStatusTextMap = computed<Record<string, string>>(() => ({
 
 const triggerTextMap = computed<Record<string, string>>(() => ({
   scheduled: pageText.value.scheduled,
+  retry: pageText.value.retry,
   manual: pageText.value.manual,
   api: pageText.value.api,
 }));

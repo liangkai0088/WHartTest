@@ -1,6 +1,7 @@
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 
@@ -43,7 +44,24 @@ class UserPromptViewSet(BaseModelViewSet):
         return UserPromptSerializer
 
     def perform_create(self, serializer):
-        """创建时自动设置用户"""
+        """创建时自动设置用户，并校验程序调用类型唯一性
+
+        避免依赖数据库唯一约束抛出未捕获的 IntegrityError（500），
+        改为友好 400 响应提示"该类型已存在"。
+        """
+        prompt_type = serializer.validated_data.get('prompt_type')
+        if prompt_type and prompt_type != PromptType.GENERAL:
+            existing = UserPrompt.objects.filter(
+                user=self.request.user,
+                prompt_type=prompt_type
+            ).first()
+            if existing:
+                label = dict(PromptType.choices).get(prompt_type, prompt_type)
+                raise DRFValidationError({
+                    'prompt_type': [
+                        f'每个用户只能有一个{label}类型的提示词，请直接编辑现有提示词'
+                    ]
+                })
         serializer.save(user=self.request.user)
 
     @action(detail=False, methods=['get'])
@@ -170,13 +188,35 @@ class UserPromptViewSet(BaseModelViewSet):
 
     @action(detail=True, methods=['post'])
     def duplicate(self, request, pk=None):
-        """复制提示词"""
+        """复制提示词（程序调用类型每用户仅一条，不支持复制）"""
         original_prompt = self.get_object()
+
+        # 程序调用类型（非通用对话）每用户只能有一条，复制会违反唯一性约束
+        if original_prompt.prompt_type != PromptType.GENERAL:
+            label = dict(PromptType.choices).get(
+                original_prompt.prompt_type, original_prompt.prompt_type
+            )
+            return Response({
+                "status": "error",
+                "code": status.HTTP_400_BAD_REQUEST,
+                "message": f"{label}类型的提示词每用户仅能有一条，不支持复制",
+                "data": {},
+                "errors": {"prompt_type": ["程序调用类型的提示词不支持复制"]}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 生成不重复的副本名称（避免名称唯一约束冲突）
+        base_name = f"{original_prompt.name} (副本)"
+        name = base_name
+        counter = 2
+        while UserPrompt.objects.filter(user=request.user, name=name).exists():
+            name = f"{base_name} ({counter})"
+            counter += 1
 
         # 创建副本
         new_prompt = UserPrompt.objects.create(
             user=request.user,
-            name=f"{original_prompt.name} (副本)",
+            name=name,
+            prompt_type=original_prompt.prompt_type,
             content=original_prompt.content,
             description=f"复制自: {original_prompt.description}" if original_prompt.description else "复制的提示词",
             is_default=False,  # 副本不设为默认

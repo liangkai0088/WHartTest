@@ -15,7 +15,7 @@
             @input="onModuleSearch"
           />
           <div class="module-actions">
-            <a-dropdown @select="handleModuleAction" trigger="hover" position="bottom" :popup-max-width="false" class="module-dropdown">
+            <a-dropdown @select="handleModuleAction" trigger="click" position="bottom" :popup-max-width="false" class="module-dropdown">
               <a-button type="primary" size="small" class="module-action-button">
                 操作
               </a-button>

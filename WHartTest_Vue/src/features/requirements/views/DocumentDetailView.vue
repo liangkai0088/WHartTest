@@ -23,6 +23,16 @@
       </div>
       <div class="header-actions">
         <a-button
+          v-if="supportsDownload"
+          type="outline"
+          @click="downloadOriginalFile"
+          :loading="downloadLoading"
+        >
+          <template #icon><icon-download /></template>
+          {{ pageText.downloadOriginalFile }}
+        </a-button>
+
+        <a-button
           v-if="supportsDocxEditor"
           type="outline"
           @click="goToDocxEditor"
@@ -473,7 +483,8 @@ import {
   IconFile,
   IconScissor,
   IconRobot,
-  IconRefresh
+  IconRefresh,
+  IconDownload
 } from '@arco-design/web-vue/es/icon';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -512,6 +523,8 @@ const pageText = computed(() => (
         openOnlineEditor: 'Open online editor',
         docxEditorNotIntegrated: 'The online editor is not integrated yet. Configure the docx-editor connection first.',
         docxEditorOpenFailed: 'Failed to open the online editor',
+        downloadOriginalFile: 'Download original file',
+        downloadFailed: 'Failed to download file',
         splitModules: 'Split modules',
         confirmModuleSplit: 'Confirm split',
         startReview: 'Start review',
@@ -619,6 +632,8 @@ const pageText = computed(() => (
         openOnlineEditor: '进入在线编辑',
         docxEditorNotIntegrated: '在线编辑功能未接入，请先配置 docx-editor 连接。',
         docxEditorOpenFailed: '打开在线编辑失败',
+        downloadOriginalFile: '下载原始文件',
+        downloadFailed: '下载文件失败',
         splitModules: '模块拆分',
         confirmModuleSplit: '确认模块拆分',
         startReview: '开始评审',
@@ -785,6 +800,7 @@ const loading = ref(false);
 const splitLoading = ref(false);
 const reviewLoading = ref(false);
 const docxEditorLoading = ref(false);
+const downloadLoading = ref(false);
 const document = ref<DocumentDetail | null>(null);
 const expandedModules = ref<string[]>([]);
 
@@ -845,6 +861,8 @@ const supportsDocxEditor = computed(() => {
   if (!document.value?.file) return false;
   return document.value.document_type === 'doc' || document.value.document_type === 'docx';
 });
+
+const supportsDownload = computed(() => !!document.value?.file);
 
 // 方法
 const getStatusColor = (status?: DocumentStatus) => {
@@ -1020,6 +1038,37 @@ const goToDocxEditor = async () => {
   }
 };
 
+// 下载原始文件
+const downloadOriginalFile = async () => {
+  if (!document.value?.id || !document.value?.file) return;
+
+  downloadLoading.value = true;
+  try {
+    const arrayBuffer = await RequirementDocumentService.downloadFile(document.value.id);
+    const blob = new Blob([arrayBuffer]);
+    const url = URL.createObjectURL(blob);
+
+    // 从 file 路径提取扩展名，拼接标题作为文件名
+    const filePath = document.value.file;
+    const extMatch = filePath.match(/\.([^.\\/]+)$/);
+    const ext = extMatch ? `.${extMatch[1]}` : '';
+    const fileName = `${document.value.title || 'document'}${ext}`;
+
+    const link = window.document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    window.document.body.appendChild(link);
+    link.click();
+    window.document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : pageText.value.downloadFailed;
+    Message.error(message || pageText.value.downloadFailed);
+  } finally {
+    downloadLoading.value = false;
+  }
+};
+
 // 查看评审报告
 const viewReport = () => {
   if (document.value?.id) {
@@ -1146,7 +1195,10 @@ const confirmReview = async () => {
 
 // 轮询文档状态
 const pollDocumentStatus = async () => {
-  const maxAttempts = 60; // 最多轮询60次（5分钟）
+  // 最多轮询1200次（每3秒一次 ≈ 1小时），对齐“评审任务1小时内完成”的业务预期。
+  // 评审耗时通常约5分钟，此前60次（约3分钟）的窗口会在评审完成前停止轮询，
+  // 导致页面状态标签停留在“评审中”，无法自动更新为“评审完成”。
+  const maxAttempts = 1200;
   let attempts = 0;
   isPollingActive = true;
 

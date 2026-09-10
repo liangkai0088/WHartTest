@@ -162,6 +162,84 @@ class PlaywrightExecutorRecoveryTest(unittest.TestCase):
             )
         )
 
+    def test_on_page_or_child_exact_match(self):
+        self.assertTrue(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/requirements",
+                "http://localhost:8913/requirements",
+            )
+        )
+
+    def test_on_page_or_child_detail_page_is_child_of_list_url(self):
+        self.assertTrue(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/requirements/914f7646-f1f2-4204-a392-031a325be4e8",
+                "http://localhost:8913/requirements",
+            )
+        )
+
+    def test_on_page_or_child_trailing_slash_tolerated(self):
+        self.assertTrue(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/requirements/914f7646/",
+                "http://localhost:8913/requirements",
+            )
+        )
+
+    def test_on_page_or_child_shared_prefix_rejected(self):
+        self.assertFalse(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/requirements-edit",
+                "http://localhost:8913/requirements",
+            )
+        )
+
+    def test_on_page_or_child_cross_origin_rejected(self):
+        self.assertFalse(
+            self.executor._on_page_or_child(
+                "http://other-host:8913/requirements",
+                "http://localhost:8913/requirements",
+            )
+        )
+
+    def test_on_page_or_child_root_only_matches_root(self):
+        self.assertFalse(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/requirements",
+                "http://localhost:8913/",
+            )
+        )
+        self.assertTrue(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/",
+                "http://localhost:8913/",
+            )
+        )
+
+    def test_on_page_or_child_query_drift_rejected_when_expected_has_query(self):
+        self.assertFalse(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/requirements/914f7646",
+                "http://localhost:8913/requirements?status=active",
+            )
+        )
+        self.assertTrue(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/requirements?status=active",
+                "http://localhost:8913/requirements?status=active",
+            )
+        )
+
+    def test_on_page_or_child_extra_query_on_current_rejected(self):
+        # 登录页自动重定向到 /login?redirect=/ 时会自动打开登录弹窗，
+        # 与配置的干净 /login 页面状态不同，必须重新导航，否则弹窗遮挡点击
+        self.assertFalse(
+            self.executor._on_page_or_child(
+                "http://localhost:8913/login?redirect=%2F",
+                "http://localhost:8913/login",
+            )
+        )
+
     def test_base_url_networkidle_timeout_does_not_block(self):
         page = AsyncMock()
         page.url = "about:blank"
@@ -226,7 +304,9 @@ class PlaywrightExecutorRecoveryTest(unittest.TestCase):
         config = AsyncMock()
         config.page_url = "/"
 
-        asyncio.run(self.executor._navigate_to_page_step_url(page, config, "http://localhost:5173"))
+        # 鉴权重定向：不猜测登录流程，抛错提示用例补充前置登录步骤
+        with self.assertRaisesRegex(RuntimeError, "页面步骤 URL 被鉴权重定向"):
+            asyncio.run(self.executor._navigate_to_page_step_url(page, config, "http://localhost:5173"))
 
         page.goto.assert_awaited_once()
 

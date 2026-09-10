@@ -287,6 +287,7 @@ const OPE_KEY_LABELS: Record<string, string> = {
   click: '点击',
   dblclick: '双击',
   hover: '悬停',
+  drag_to: '拖拽到目标',
   fill: '填充',
   type: '输入',
   clear: '清空',

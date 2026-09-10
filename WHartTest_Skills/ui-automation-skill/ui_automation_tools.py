@@ -680,6 +680,8 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
 
     # WebSocket 地址
     ws_url = BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
+    sep = '&' if '?' in ws_url else '?'
+    ws_url = f"{ws_url}{sep}api_key={API_KEY}"
 
     result = {"status": "pending", "message": "任务已发送"}
     execution_done = threading.Event()
@@ -722,6 +724,7 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
                 "func_name": "u_test_case",
                 "func_args": {
                     "case_id": testcase_id,
+                    "trigger_type": "api",
                 }
             }
         }
@@ -799,6 +802,8 @@ def execute_page_steps(step_id: int, env_config_id: int = None, actuator_id: str
     import time
 
     ws_url = BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
+    sep = '&' if '?' in ws_url else '?'
+    ws_url = f"{ws_url}{sep}api_key={API_KEY}"
     result = {"status": "sent", "message": "执行命令已发送"}
 
     def on_open(ws):
@@ -807,6 +812,7 @@ def execute_page_steps(step_id: int, env_config_id: int = None, actuator_id: str
                 "func_name": "u_page_steps",
                 "func_args": {
                     "page_step_id": step_id,
+                    "trigger_type": "api",
                 }
             }
         }

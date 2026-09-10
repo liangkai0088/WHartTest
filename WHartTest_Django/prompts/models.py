@@ -95,19 +95,12 @@ class UserPrompt(models.Model):
             models.Index(fields=['user', 'is_active']),
             models.Index(fields=['user', 'prompt_type']),
         ]
-        # 添加约束：程序调用类型每用户只能有一个
+        # 添加约束：程序调用类型（非通用对话）每用户只能有一个
+        # 使用 != general 而非白名单，覆盖全部程序调用类型（含未来新增类型）
         constraints = [
             models.UniqueConstraint(
                 fields=['user', 'prompt_type'],
-                condition=models.Q(prompt_type__in=[
-                    PromptType.COMPLETENESS_ANALYSIS.value,
-                    PromptType.CONSISTENCY_ANALYSIS.value,
-                    PromptType.TESTABILITY_ANALYSIS.value,
-                    PromptType.FEASIBILITY_ANALYSIS.value,
-                    PromptType.CLARITY_ANALYSIS.value,
-                    PromptType.LOGIC_ANALYSIS.value,
-                    PromptType.TEST_CASE_EXECUTION.value,
-                ]),
+                condition=~models.Q(prompt_type=PromptType.GENERAL),
                 name='unique_user_program_prompt_type'
             )
         ]
@@ -142,8 +135,9 @@ class UserPrompt(models.Model):
                     'is_default': '每个用户只能有一个默认提示词'
                 })
 
-        # 验证程序调用类型的唯一性
-        if self.prompt_type in self.PROGRAM_CALL_TYPES:
+        # 验证程序调用类型（非通用对话）的唯一性：
+        # 使用 != general 而非白名单，覆盖所有程序调用类型（含未来新增类型）
+        if self.prompt_type != PromptType.GENERAL:
             existing_program_prompt = UserPrompt.objects.filter(
                 user=self.user,
                 prompt_type=self.prompt_type
@@ -172,28 +166,29 @@ class UserPrompt(models.Model):
 
     @classmethod
     def get_user_prompt_by_type(cls, user, prompt_type):
-        """根据类型获取用户提示词"""
-        try:
-            return cls.objects.get(
-                user=user,
-                prompt_type=prompt_type,
-                is_active=True
-            )
-        except cls.DoesNotExist:
-            return None
+        """根据类型获取用户提示词
+
+        使用 filter+first 而非 get，避免历史重复数据触发 MultipleObjectsReturned 异常。
+        存在多条时取最新一条（id 最大）。
+        """
+        return cls.objects.filter(
+            user=user,
+            prompt_type=prompt_type,
+            is_active=True
+        ).order_by('-id').first()
 
     @classmethod
     def get_user_default_prompt(cls, user):
-        """获取用户默认提示词（仅限通用对话类型）"""
-        try:
-            return cls.objects.get(
-                user=user,
-                prompt_type=PromptType.GENERAL,
-                is_default=True,
-                is_active=True
-            )
-        except cls.DoesNotExist:
-            return None
+        """获取用户默认提示词（仅限通用对话类型）
+
+        使用 filter+first 而非 get，避免重复默认数据触发异常。
+        """
+        return cls.objects.filter(
+            user=user,
+            prompt_type=PromptType.GENERAL,
+            is_default=True,
+            is_active=True
+        ).order_by('-id').first()
 
     @classmethod
     def get_user_prompts(cls, user, active_only=True):

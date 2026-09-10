@@ -73,8 +73,17 @@ const handleError = (error: any, defaultMessage: string): APIResponse<any> => {
     const responseData = error.response?.data;
     // 优先使用 errors 数组中的详细错误信息
     let message = defaultMessage;
-    if (responseData?.errors && Array.isArray(responseData.errors) && responseData.errors.length > 0) {
-      message = responseData.errors.join('; ');
+    const errors = responseData?.errors;
+    if (Array.isArray(errors) && errors.length > 0) {
+      message = errors.join('; ');
+    } else if (errors && typeof errors === 'object' && !Array.isArray(errors)) {
+      // 字段级校验错误对象，如 {"parent": ["模块级别不能超过5级"]}
+      const fieldMessages = Object.values(errors)
+        .flat()
+        .filter((m): m is string => typeof m === 'string');
+      if (fieldMessages.length > 0) {
+        message = fieldMessages.join('; ');
+      }
     } else if (responseData?.detail) {
       message = responseData.detail;
     } else if (responseData?.message) {

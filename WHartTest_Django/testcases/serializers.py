@@ -309,6 +309,20 @@ class TestCaseModuleSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """验证模块数据"""
+        project = self.context.get("project") or getattr(self.instance, "project", None)
+        parent = attrs.get("parent", getattr(self.instance, "parent", None))
+        name = attrs.get("name", getattr(self.instance, "name", ""))
+
+        # 业务层提前拦截同一项目、同一父模块下的重名，避免数据库约束异常直接返回 500。
+        if project and name:
+            duplicate_modules = TestCaseModule.objects.filter(
+                project=project, parent=parent, name=name
+            )
+            if self.instance:
+                duplicate_modules = duplicate_modules.exclude(pk=self.instance.pk)
+            if duplicate_modules.exists():
+                raise serializers.ValidationError({"name": "模块名称已存在"})
+
         # 创建时，确保父模块属于同一个项目
         if self.instance is None and "parent" in attrs and attrs["parent"]:
             project = self.context["project"]

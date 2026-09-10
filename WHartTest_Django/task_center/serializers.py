@@ -85,6 +85,7 @@ class TaskExecutionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'execution_id', 'task', 'trigger_type', 'status',
             'started_at', 'finished_at', 'duration', 'log', 'error_message',
+            'ui_batch', 'suite_execution', 'retry_of', 'retry_attempt', 'retry_limit', 'retry_interval',
         ]
         read_only_fields = fields
 

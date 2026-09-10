@@ -338,7 +338,7 @@ class UiBatchExecutionRecord(models.Model):
         (3, _('部分失败')),
         (4, _('全部失败')),
     ]
-    TRIGGER_TYPE_CHOICES = [('manual', _('手动执行')), ('scheduled', _('定时执行')), ('api', _('API 触发'))]
+    TRIGGER_TYPE_CHOICES = [('manual', _('手动执行')), ('scheduled', _('定时执行')), ('api', _('API 触发')), ('retry', _('重试'))]
 
     name = models.CharField(_('批次名称'), max_length=255)
     total_cases = models.IntegerField(_('用例总数'), default=0)
@@ -387,7 +387,7 @@ class UiBatchExecutionRecord(models.Model):
 class UiExecutionRecord(models.Model):
     """UI 测试执行记录"""
     STATUS_CHOICES = [(0, _('未执行')), (1, _('执行中')), (2, _('成功')), (3, _('失败')), (4, _('取消'))]
-    TRIGGER_TYPE_CHOICES = [('manual', _('手动执行')), ('scheduled', _('定时执行')), ('api', _('API 触发'))]
+    TRIGGER_TYPE_CHOICES = [('manual', _('手动执行')), ('scheduled', _('定时执行')), ('api', _('API 触发')), ('retry', _('重试'))]
 
     batch = models.ForeignKey(
         UiBatchExecutionRecord, on_delete=models.CASCADE,

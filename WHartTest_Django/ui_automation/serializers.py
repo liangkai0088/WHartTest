@@ -271,7 +271,7 @@ class UiTestCaseListSerializer(serializers.ModelSerializer):
         read_only_fields = ['status', 'creator', 'created_at', 'updated_at']
 
     def get_step_count(self, obj):
-        return obj.case_steps.count()
+        return sum(case_step.page_step.step_details.count() for case_step in obj.case_steps.all())
 
 
 class UiTestCaseSerializer(serializers.ModelSerializer):
@@ -286,7 +286,7 @@ class UiTestCaseSerializer(serializers.ModelSerializer):
         read_only_fields = ['status', 'result_data', 'error_message', 'creator', 'created_at', 'updated_at']
 
     def get_step_count(self, obj):
-        return obj.case_steps.count()
+        return sum(case_step.page_step.step_details.count() for case_step in obj.case_steps.all())
 
 
 class UiTestCaseDetailSerializer(UiTestCaseSerializer):

@@ -120,6 +120,11 @@ class TestExecutionSystemPromptTests(SimpleTestCase):
         self.assertIn("**密码**：admin123456", prompt)
         self.assertIn("禁止使用 Skill 文档中的示例账号或密码", prompt)
         self.assertIn("前置交互", prompt)
+        self.assertIn("显式的登录/鉴权前置页面步骤", prompt)
+        self.assertIn("禁止假设浏览器已登录", prompt)
+        self.assertIn("缺少凭据配置", prompt)
+        self.assertIn("auth_paths", prompt)
+        self.assertIn("wait_timeout=15000", prompt)
         self.assertIn("password123", prompt)
 
 

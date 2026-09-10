@@ -282,6 +282,7 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 
 > 示例中的 URL、账号和密码只是占位符。真实生成/保存 UI 用例时，必须使用本次测试的项目配置地址、项目登录凭据、公共变量或用户明确给出的值；不要把示例值直接写入真实用例。
 > 如果输入框、按钮或弹窗只有在点击“账号登录/展开/切换标签”等前置操作后才出现，页面步骤必须按真实执行顺序保存这些前置点击。
+> 登录/提交按钮点击后如果会触发页面跳转或鉴权重定向，点击步骤必须保存等待参数，例如 `auth_paths=["/login"]`、`wait_timeout=15000`，避免还停留在登录页就执行后续步骤。
 
 ### 获取模块树
 
@@ -341,7 +342,7 @@ python ui_automation_tools.py --action set_step_details \
     {"step_type": 0, "element": 100, "ope_key": "click", "ope_value": {"wait_after_click": true}},
     {"step_type": 0, "element": 101, "ope_key": "fill", "ope_value": {"value": "<项目登录用户名>"}},
     {"step_type": 0, "element": 102, "ope_key": "fill", "ope_value": {"value": "<项目登录密码>"}},
-    {"step_type": 0, "element": 103, "ope_key": "click", "ope_value": {"wait_after_click": true}}
+    {"step_type": 0, "element": 103, "ope_key": "click", "ope_value": {"wait_after_click": true, "auth_paths": ["/login"], "wait_timeout": 15000}}
   ]'
 ```
 
@@ -376,6 +377,7 @@ python ui_automation_tools.py --action set_case_steps \
 | `check` | 勾选复选框 | `{}` |
 | `uncheck` | 取消勾选 | `{}` |
 | `hover` | 鼠标悬停 | `{}` |
+| `drag_to` | 拖拽元素到目标(HTML5 DnD 自动降级鼠标序列) | `{"target_locator_type": "xpath", "target_locator_value": "//div[@class='drop-zone']"}` 或 `{"target_text": "目标文本"}` |
 | `double_click` | 双击 | `{}` |
 | `right_click` | 右键点击 | `{}` |
 | `press` | 按键 | `{"key": "Enter"}` |
@@ -457,7 +459,7 @@ python ui_automation_tools.py --action set_step_details \
     {"step_type": 0, "element": 100, "ope_key": "click", "ope_value": {"wait_after_click": true}},
     {"step_type": 0, "element": 101, "ope_key": "fill", "ope_value": {"value": "${{username}}"}},
     {"step_type": 0, "element": 102, "ope_key": "fill", "ope_value": {"value": "${{password}}"}},
-    {"step_type": 0, "element": 103, "ope_key": "click", "ope_value": {"wait_after_click": true}}
+    {"step_type": 0, "element": 103, "ope_key": "click", "ope_value": {"wait_after_click": true, "auth_paths": ["/login"], "wait_timeout": 15000}}
   ]'
 
 # 2.5 创建测试用例
