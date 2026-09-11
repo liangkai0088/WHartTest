@@ -64,12 +64,21 @@ class SocketUserManager:
 
     @classmethod
     def get_actuator(cls, actuator_id: Optional[str] = None) -> Optional['UiAutomationConsumer']:
-        """获取执行器，如果不指定则返回第一个可用的"""
-        if actuator_id and actuator_id in cls._actuator_users:
-            return cls._actuator_users[actuator_id]
-        if cls._actuator_users:
-            return list(cls._actuator_users.values())[0]
+        """获取指定执行器；默认优先使用启用的有界面浏览器。"""
+        if actuator_id:
+            return cls._actuator_users.get(actuator_id)
+        candidates = sorted(
+            cls._actuator_users.values(),
+            key=lambda consumer: cls.actuator_priority(consumer.actuator_info),
+        )
+        for consumer in candidates:
+            if consumer.actuator_info.get('is_open', True):
+                return consumer
         return None
+
+    @staticmethod
+    def actuator_priority(info: dict) -> tuple[bool, bool]:
+        return (not info.get('is_open', True), info.get('headless') is not False)
 
     @classmethod
     def get_actuator_by_id(cls, actuator_id: str) -> Optional['UiAutomationConsumer']:
@@ -82,7 +91,7 @@ class SocketUserManager:
 
     @classmethod
     def has_actuator(cls) -> bool:
-        return bool(cls._actuator_users)
+        return cls.get_actuator() is not None
 
     @classmethod
     def get_actuator_count(cls) -> int:

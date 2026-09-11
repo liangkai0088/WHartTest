@@ -160,6 +160,15 @@ class PlaywrightExecutor:
         if self.trace_enabled:
             Path(self.trace_dir).mkdir(parents=True, exist_ok=True)
 
+    def _browser_launch_options(self) -> dict:
+        options = {'headless': self.headless, 'timeout': self.launch_timeout}
+        proxy_server = os.getenv('WHARTTEST_BROWSER_PROXY', '').strip()
+        if proxy_server:
+            options['proxy'] = {'server': proxy_server}
+        elif os.getenv('WHARTTEST_BROWSER_DIRECT', '').lower() == 'true':
+            options['args'] = ['--no-proxy-server']
+        return options
+
     async def init_browser(self) -> None:
         """初始化浏览器"""
         # 若上次未正常关闭，先释放，避免叠加启动多个 Chromium
@@ -174,15 +183,13 @@ class PlaywrightExecutor:
         if self.persistent:
             self._context = await browser_launcher.launch_persistent_context(
                 self.user_data_dir,
-                headless=self.headless,
-                timeout=self.launch_timeout,
+                **self._browser_launch_options(),
             )
             pages = self._context.pages
             self._page = pages[0] if pages else await self._context.new_page()
         else:
             self._browser = await browser_launcher.launch(
-                headless=self.headless,
-                timeout=self.launch_timeout,
+                **self._browser_launch_options(),
             )
             self._context = await self._browser.new_context()
             self._page = await self._context.new_page()
@@ -1923,8 +1930,7 @@ class PlaywrightExecutor:
 
         browser_launcher = getattr(self._playwright, self.browser_type)
         browser = await browser_launcher.launch(
-            headless=self.headless,
-            timeout=self.launch_timeout,
+            **self._browser_launch_options(),
         )
 
         logger.info(f"[并发执行] 开始执行 {len(configs)} 个用例, 最大并发数: {max_concurrent}")

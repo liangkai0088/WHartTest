@@ -22,6 +22,7 @@ from ui_automation.models import (
 from .ui_automation_completion import (
     ExecutionAgentState, UIAutomationIncomplete, build_ui_execution_contract, inspect_ui_completion,
     stream_with_ui_completion,
+    extract_execution_case_id, recover_execution_context,
 )
 
 
@@ -152,6 +153,34 @@ class CompletionLoopTests(SimpleTestCase):
     saved = {**missing, 'status': 'missing_execution', 'message': '缺少执行', 'ui_test_case_id': 55}
     done = {**saved, 'completed': True, 'status': 'passed', 'execution_record_id': 152}
 
+    def test_execution_id_requires_action_and_supports_chat_wording(self):
+        for message in ('执行ID为 202 的测试用例。', '执行202用例', '运行功能用例ID: 202', '重跑202的测试用例'):
+            self.assertEqual(extract_execution_case_id(message), 202)
+        self.assertIsNone(extract_execution_case_id('查询测试用例 ID: 202'))
+
+    def test_continue_keeps_original_execution_start_and_case(self):
+        case_id, contract = recover_execution_context(
+            {'ui_execution_contract': self.contract}, message='继续', user_id=1, project_id=37,
+        )
+        self.assertEqual(case_id, 131)
+        self.assertIs(contract, self.contract)
+
+    def test_legacy_continue_recovers_case_from_user_execution_request(self):
+        values = {'ui_execution_contract': None, 'messages': [
+            HumanMessage(content='执行ID为 202 的测试用例。'),
+            AIMessage(content='环境数据缺失，本次未通过。'),
+            HumanMessage(content='继续'), AIMessage(content='走查完成'),
+        ]}
+        self.assertEqual(recover_execution_context(values, message='继续执行', user_id=1, project_id=39), (202, None))
+
+    def test_new_topic_and_foreign_context_are_not_resumed(self):
+        values = {'ui_execution_contract': self.contract}
+        self.assertEqual(recover_execution_context(values, message='解释测试结果', user_id=1, project_id=37), (None, None))
+        with self.assertRaises(ValueError):
+            recover_execution_context(values, message='继续', user_id=2, project_id=37)
+        values = {'messages': [HumanMessage(content='执行202用例'), HumanMessage(content='生成需求报告')]}
+        self.assertEqual(recover_execution_context(values, message='继续', user_id=1, project_id=37), (None, None))
+
     async def collect(self, agent, **kwargs):
         return [event async for event in stream_with_ui_completion(
             agent, kwargs.pop('agent_input', {'messages': []}), config={},
@@ -211,9 +240,10 @@ class CompletionLoopTests(SimpleTestCase):
 
     @patch('orchestrator_integration.ui_automation_completion.should_stop', return_value=False)
     async def test_non_execution_chat_is_unchanged(self, stop):
-        agent = FakeAgent([[('messages', AIMessage(content='hello'))]])
+        agent = FakeAgent([[('updates', {'model': {'messages': [AIMessage(content='你好')]}})]])
         with patch('orchestrator_integration.ui_automation_completion.inspect_ui_completion') as inspect:
-            self.assertEqual(len(await self.collect(agent, contract=None)), 1)
+            events = await self.collect(agent, contract=None)
+            self.assertEqual(events[0][1][0].content, '你好')
             inspect.assert_not_called()
 
     async def test_execution_contract_survives_checkpoint_and_new_agent(self):
@@ -232,7 +262,7 @@ class CompletionLoopTests(SimpleTestCase):
 
 
 class CompletionSSETests(SimpleTestCase):
-    async def run_stream(self, reports):
+    async def run_stream(self, reports, continuation=False):
         from . import agent_loop_view as view
 
         agent = FakeAgent([[] for _ in reports])
@@ -240,7 +270,9 @@ class CompletionSSETests(SimpleTestCase):
 
         @asynccontextmanager
         async def checkpointer():
-            yield InMemorySaver()
+            yield SimpleNamespace(aget_tuple=AsyncMock(return_value=SimpleNamespace(checkpoint={
+                'channel_values': {'ui_execution_contract': CompletionLoopTests.contract},
+            })))
 
         session = SimpleNamespace(title='UI test', created_at=timezone.now())
         config = SimpleNamespace(name='test-model', context_limit=128000, supports_vision=False)
@@ -265,14 +297,22 @@ class CompletionSSETests(SimpleTestCase):
             stack.enter_context(patch.object(view, 'get_effective_system_prompt_async', AsyncMock(return_value=('', 'test'))))
             stack.enter_context(patch.object(view, '_sanitize_history_before_model_call', AsyncMock()))
             stack.enter_context(patch.object(view, '_prepare_agent_loop_human_message', AsyncMock(return_value=('execute', {}, 'execute'))))
+            stack.enter_context(patch.object(view.TestCase.objects, 'filter', return_value=SimpleNamespace(exists=lambda: True)))
+            stack.enter_context(patch('projects.models.ProjectCredential.objects.filter', return_value=SimpleNamespace(first=lambda: None)))
             stack.enter_context(patch('orchestrator_integration.builtin_tools.get_builtin_tools', return_value=[]))
             stack.enter_context(patch('orchestrator_integration.ui_automation_completion.should_stop', return_value=False))
             stack.enter_context(patch('orchestrator_integration.ui_automation_completion.inspect_ui_completion', side_effect=reports))
             raw = [event async for event in view.AgentLoopStreamAPIView()._create_stream_generator(
-                request=SimpleNamespace(user=SimpleNamespace(id=1)), user_message='execute',
-                project_id='37', project=object(), session_id='sse-test', test_case_id=131,
+                request=SimpleNamespace(user=SimpleNamespace(id=1)), user_message='继续' if continuation else 'execute',
+                project_id='37', project=object(), session_id='sse-test', test_case_id=None if continuation else 131,
             )]
         return [json.loads(event[6:]) for event in raw if event.startswith('data: ') and '[DONE]' not in event], agent
+
+    async def test_plain_continue_restores_contract_before_creating_tools_and_agent(self):
+        events, agent = await self.run_stream([CompletionLoopTests.done], continuation=True)
+        self.assertFalse(any(event['type'] == 'error' for event in events), events)
+        self.assertEqual(agent.inputs[0]['ui_execution_contract'], CompletionLoopTests.contract)
+        self.assertEqual(events[-1]['ui_automation']['execution_record_id'], 152)
 
     async def test_completion_event_follows_verified_execution(self):
         events, agent = await self.run_stream([CompletionLoopTests.missing, CompletionLoopTests.done])

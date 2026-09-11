@@ -10,6 +10,7 @@ from langchain.agents import AgentState
 from langchain_core.messages import HumanMessage
 
 from .stop_signal import should_stop
+from .response_language import stream_with_chinese_responses
 
 
 class ExecutionAgentState(AgentState, total=False):
@@ -20,6 +21,42 @@ class UIAutomationIncomplete(RuntimeError):
     def __init__(self, report):
         self.report = report
         super().__init__(f"UI 自动化未完成：{report['message']}")
+
+
+def is_execution_continuation(message):
+    return bool(re.fullmatch(
+        r"\s*(?:请)?(?:继续|接着|恢复)(?:执行|运行|测试|生成|上次(?:的)?(?:任务|内容)|未完成(?:的)?任务)?[吧。！!\s]*",
+        message or "",
+    ))
+
+
+def extract_execution_case_id(message):
+    if not re.search(r"执行|运行|重跑|回归|生成\s*UI", message or "", re.I):
+        return None
+    match = re.search(
+        r"(?:执行\s*ID\s*为|(?:功能|测试)?用例\s*(?:ID)?\s*[：:#为]?|case[_-]?id\s*[：:=])\s*(\d+)"
+        r"|(?:执行|运行|重跑|回归)\s*(\d+)\s*(?:号)?(?:的)?(?:测试)?用例",
+        message, re.I,
+    )
+    return int(next(value for value in match.groups() if value)) if match else None
+
+
+def recover_execution_context(values, *, message, user_id, project_id):
+    """Only explicit continuation can inherit execution intent from this thread."""
+    if not is_execution_continuation(message):
+        return None, None
+    contract = values.get('ui_execution_contract')
+    if contract:
+        if contract.get('user_id') != user_id or str(contract.get('project_id')) != str(project_id):
+            raise ValueError('UI 自动化执行上下文与当前用户或项目不一致')
+        return int(contract['test_case_id']), contract
+    # Recover older sessions whose continuation requests had cleared the contract.
+    for previous in reversed(values.get('messages', [])):
+        if isinstance(previous, HumanMessage):
+            content = previous.content
+            if not isinstance(content, str) or not is_execution_continuation(content):
+                return extract_execution_case_id(content) if isinstance(content, str) else None, None
+    return None, None
 
 
 def build_ui_execution_contract(*, test_case_id, project_id, user_id, started_at):
@@ -105,6 +142,8 @@ def build_completion_prompt(contract, report):
         '并用 get_execution_records 核对新记录及终态。若仍在执行，应等待查询，禁止重复提交。'
         '功能用例 ID 与 UI 用例 ID 属于不同表，禁止将功能用例 ID 直接用于 UI 执行查询。'
         '浏览器走查和截图不替代平台执行。若工具报错或执行器离线，如实说明具体阻塞，禁止宣称完成。'
+        '功能走查未通过或测试数据缺失不免除保存 UI 用例和平台执行；保留原始断言，'
+        '让执行记录如实反映失败原因，禁止把断言改为通过，也禁止伪造或擅自补充业务数据。'
     )
 
 
@@ -122,7 +161,9 @@ async def stream_with_ui_completion(agent, agent_input, *, config, stream_mode, 
             yield 'ui_automation', {'status': 'stopped', 'message': '已停止生成'}
             return
         interrupted = False
-        async for mode, chunk in agent.astream(agent_input, config=config, stream_mode=stream_mode):
+        async for mode, chunk in stream_with_chinese_responses(
+            agent, agent_input, config=config, stream_mode=stream_mode,
+        ):
             if mode == 'updates' and isinstance(chunk, dict) and '__interrupt__' in chunk:
                 interrupted = True
             yield mode, chunk

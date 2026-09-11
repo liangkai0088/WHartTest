@@ -675,6 +675,20 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
     if not WEBSOCKET_AVAILABLE:
         return {"status": "error", "message": "执行功能需要 websocket-client 模块，请运行: pip install websocket-client"}
 
+    # Resolve the headed local actuator before opening the task websocket. This
+    # keeps the LLM from treating a transport hiccup as permission to switch
+    # silently to the Docker headless fallback.
+    selected_actuator = actuator_id
+    if not selected_actuator:
+        actuator_data = get_actuators()
+        actuator_items = actuator_data.get("items", []) if isinstance(actuator_data, dict) else []
+        available = [item for item in actuator_items if item.get("is_open", True)]
+        available.sort(key=lambda item: (item.get("headless") is not False, item.get("id", "")))
+        if available:
+            selected_actuator = available[0].get("id")
+        if selected_actuator:
+            print(f"优先使用有界面执行器: {selected_actuator}")
+
     import threading
     import time
 
@@ -730,8 +744,8 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
         }
         if env_config_id:
             cmd["data"]["func_args"]["env_config_id"] = env_config_id
-        if actuator_id:
-            cmd["data"]["func_args"]["actuator_id"] = actuator_id
+        if selected_actuator:
+            cmd["data"]["func_args"]["actuator_id"] = selected_actuator
 
         # 从API Key获取用户信息（如果可用）
         try:

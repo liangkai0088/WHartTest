@@ -247,6 +247,28 @@ class RequirementDocumentViewSet(BaseModelViewSet):
         response["Content-Disposition"] = f'attachment; filename="{document.title}.{ext}"'
         return response
 
+    @action(detail=True, methods=["get"], url_path="export-report")
+    def export_report(self, request, pk=None):
+        """导出评审报告 PDF GET /api/requirements/documents/{id}/export-report/?report_id={uuid}"""
+        from django.http import HttpResponse
+        from urllib.parse import quote
+        from .report_export import generate_review_report_pdf
+
+        document = self.get_object()
+        report_id = request.query_params.get("report_id")
+        if report_id:
+            report = get_object_or_404(ReviewReport, id=report_id, document=document)
+        else:
+            report = document.review_reports.order_by("-review_date").first()
+        if report is None:
+            return Response({"error": "该文档暂无评审报告"}, status=status.HTTP_404_NOT_FOUND)
+
+        pdf_bytes = generate_review_report_pdf(document, report)
+        filename = f"{document.title}-评审报告-{report.review_date.strftime('%Y%m%d')}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(filename)}"
+        return response
+
     @action(detail=True, methods=["post"], url_path="docx-editor/session")
     @permission_required("requirements.change_requirementdocument")
     def create_docx_editor_session(self, request, pk=None):

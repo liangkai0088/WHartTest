@@ -944,6 +944,7 @@ class ActuatorViewSet(viewsets.ViewSet):
                     'connected_at': actuator_info.get('connected_at'),
                 })
             actuators.append(info)
+        actuators.sort(key=SocketUserManager.actuator_priority)
 
         return Response({
             'status': 'success',

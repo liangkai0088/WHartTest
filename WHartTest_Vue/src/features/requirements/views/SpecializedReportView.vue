@@ -30,7 +30,7 @@
         />
       </div>
       <div class="header-actions">
-        <a-button type="outline" @click="exportReport">
+        <a-button type="outline" :loading="exporting" @click="exportReport">
           <template #icon><icon-download /></template>
           导出报告
         </a-button>
@@ -270,6 +270,9 @@ const pageText = computed(() => (
         resolveFailed: 'Failed to resolve issue',
         unresolveSuccess: 'Resolution revoked',
         unresolveFailed: 'Failed to revoke resolution',
+        noReportData: 'No review report data to export',
+        exportSuccess: 'Report exported successfully',
+        exportFailed: 'Failed to export report',
       }
     : {
         analysisDimensions: '专项分析维度',
@@ -293,11 +296,15 @@ const pageText = computed(() => (
         resolveFailed: '标记解决失败',
         unresolveSuccess: '已撤销解决',
         unresolveFailed: '撤销解决失败',
+        noReportData: '暂无评审报告数据可导出',
+        exportSuccess: '评审报告导出成功',
+        exportFailed: '评审报告导出失败',
       }
 ));
 
 // 响应式数据
 const loading = ref(false);
+const exporting = ref(false);
 const document = ref<any>(null);
 const selectedAnalysisType = ref<string>('completeness');
 const priorityFilter = ref<string>('');
@@ -463,8 +470,36 @@ const handleVersionChange = (reportId: string) => {
   priorityFilter.value = '';
 };
 
-const exportReport = () => {
-  Message.info('导出功能开发中...');
+const exportReport = async () => {
+  if (!document.value || !selectedReport.value) {
+    Message.warning(pageText.value.noReportData);
+    return;
+  }
+  exporting.value = true;
+  try {
+    const arrayBuffer = await RequirementDocumentService.exportReviewReport(
+      document.value.id,
+      selectedReportId.value || undefined
+    );
+    const blob = new Blob([arrayBuffer], {
+      type: 'application/pdf'
+    });
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    link.href = url;
+    link.download = `${document.value.title || '需求'}-评审报告-${dateStr}.pdf`;
+    window.document.body.appendChild(link);
+    link.click();
+    window.document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    Message.success(pageText.value.exportSuccess);
+  } catch (error) {
+    console.error('导出报告失败:', error);
+    Message.error(pageText.value.exportFailed);
+  } finally {
+    exporting.value = false;
+  }
 };
 
 // 问题解决状态处理

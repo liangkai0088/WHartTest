@@ -279,6 +279,29 @@ services:
     # Embedding: curl -X POST http://localhost:8917/v1/models -d '{"model_name": "bge-m3", "model_type": "embedding"}'
     # Reranker:  curl -X POST http://localhost:8917/v1/models -d '{"model_name": "bge-reranker-v2-m3", "model_type": "rerank"}'
 
+  # Reuse the backend's Python/Playwright runtime with the latest local actuator source.
+  actuator:
+    image: wharttest-backend
+    pull_policy: never
+    container_name: wharttest-actuator
+    entrypoint: [ "python", "/actuator/main.py" ]
+    command: [ "--config", "/actuator/config.toml", "--server", "ws://backend:8000/ws/ui/actuator/", "--api", "http://backend:8000", "--id", "docker-local", "--no-gui", "--headless" ]
+    working_dir: /app/data/actuator
+    volumes:
+      - ./WHartTest_Actuator:/actuator:ro
+      - ./data:/app/data
+    environment:
+      - WHARTTEST_ACTUATOR_DOCKER=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    shm_size: 1gb
+
   # Qdrant 向量数据库 - 知识库检索
   qdrant:
     image: ${DOCKER_QDRANT_IMAGE:-qdrant/qdrant:latest}

@@ -58,14 +58,19 @@ from .middleware_config import (
 from .models import AgentReviewRun
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
 from .response_language import (
+    ChineseResponseMiddleware,
     is_user_visible_model_chunk,
+    stream_with_chinese_responses,
     with_chinese_response_instruction,
 )
 from .ui_automation_completion import (
     ExecutionAgentState,
     UIAutomationIncomplete,
     build_ui_execution_contract,
+    extract_execution_case_id,
     inspect_ui_completion,
+    is_execution_continuation,
+    recover_execution_context,
     stream_with_ui_completion,
 )
 from .stop_signal import should_stop, clear_stop_signal
@@ -102,6 +107,8 @@ TEST_EXECUTION_SKILL_RUNTIME_INSTRUCTION = """
 - `execute_skill_script`
 
 禁止因为系统提示词或历史提示词提到 `browser_navigate`、`browser_snapshot`、`browser_take_screenshot`、`save_operation_screenshots_to_the_application_case` 等未注入工具，就判定工具不可用或 UI 自动化执行器离线。
+
+UI 用例必须优先启动本机可见浏览器：用 `get_actuators` 查询执行器，选择 `is_open=true` 且 `headless=false` 的执行器，并把返回的执行器 `id` 显式传给 `execute_testcase --actuator_id <可见执行器ID>`；不能因为 API/WebSocket 或“执行器代理”提示失败就自行切换到无头执行器。只有 `get_actuators` 明确没有在线可见执行器时才允许使用 Docker 无头执行器，并在中文执行说明中如实说明。`execute_testcase` 的 API/WebSocket 调用只是下发任务，实际登录、输入、点击和断言必须由执行器在浏览器页面完成，禁止用直接请求业务接口代替 UI 测试步骤。
 
 必须按以下顺序执行：
 0. 执行功能用例前，先调用 `read_skill_content(skill_name="ui-automation")` 并用 `get_testcases --project_id <项目ID>` 查询关联 UI 用例；若不存在，必须用 playwright-skill 观察真实页面后创建页面、元素、页面步骤和 UI 用例，然后通过 `execute_skill_script(skill_name="ui-automation", command="python ui_automation_tools.py --action execute_testcase --testcase_id <UI用例ID> --wait_result --exec_timeout 120")` 执行，并查询 `get_execution_records --testcase_id <UI用例ID> --limit 1` 核验本次记录及终态。浏览器走查和截图仅是中间步骤，不能替代 UI 用例生成和平台执行；此流程已获授权，不得再询问是否补做。功能用例 ID 和 UI 用例 ID 不可混用，查询报错不等于没有记录。
@@ -206,6 +213,11 @@ def _build_test_execution_system_prompt(
         prompt_parts.append("\n".join(credential_lines))
 
     prompt_parts.append(TEST_EXECUTION_SKILL_RUNTIME_INSTRUCTION)
+    prompt_parts.append(
+        "功能用例审核状态与实际执行结果是两个独立状态。浏览器走查未通过、断言失败或测试数据缺失，"
+        "仍须保存包含原始断言的 UI 自动化用例并执行，以实际执行记录报告失败或阻塞。"
+        "禁止为得到通过结果删改断言，禁止伪造或擅自新增业务测试数据。"
+    )
     if generate_playwright_script:
         prompt_parts.extend([PLAYWRIGHT_SCRIPT_INSTRUCTION, GENERATE_UI_AUTOMATION_INSTRUCTION])
         if test_case_id:
@@ -1014,13 +1026,31 @@ class AgentLoopStreamAPIView(View):
         # 本次请求开始时间:用于自动执行 UI 用例的去重(本会话内 LLM 已执行过则跳过)
         from django.utils import timezone as tz
         request_started_at = tz.now()
+        ui_contract = None
+        if not test_case_id and is_execution_continuation(user_message):
+            async with get_async_checkpointer() as previous_checkpointer:
+                previous = await previous_checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+            values = previous.checkpoint.get("channel_values", {}) if previous else {}
+            test_case_id, ui_contract = recover_execution_context(
+                values, message=user_message, user_id=request.user.id, project_id=project_id,
+            )
+            if test_case_id:
+                if not await sync_to_async(TestCase.objects.filter(id=test_case_id, project_id=project_id).exists)():
+                    yield create_sse_data({"type": "error", "message": "功能用例不存在或不属于当前项目"})
+                    return
+                from projects.models import ProjectCredential
+                credential = await sync_to_async(ProjectCredential.objects.filter(project_id=project_id).first)()
+                if credential:
+                    project_url = credential.system_url or None
+                    project_username = credential.username or None
+                    project_password = credential.password or None
         # 固定逻辑:执行功能用例必自动生成 UI 用例并自动执行(忽略前端"生成UI用例"可选开关)
         if test_case_id:
             generate_playwright_script = True
-        ui_contract = await sync_to_async(build_ui_execution_contract)(
+        ui_contract = ui_contract or (await sync_to_async(build_ui_execution_contract)(
             test_case_id=test_case_id, project_id=project_id,
             user_id=request.user.id, started_at=request_started_at,
-        ) if test_case_id else None
+        ) if test_case_id else None)
         review_thresholds = normalize_review_thresholds(agent_review_options)
         try:
             attached_files = await sync_to_async(validate_file_ids)(file_ids, project, request.user)
@@ -1253,7 +1283,7 @@ class AgentLoopStreamAPIView(View):
                     system_prompt=effective_prompt,
                     state_schema=ExecutionAgentState,
                     checkpointer=checkpointer,
-                    middleware=middleware,
+                    middleware=[ChineseResponseMiddleware(), *middleware],
                 )
                 logger.info(
                     f"AgentLoopStreamAPI: Agent created with {len(tools)} tools"
@@ -1458,7 +1488,7 @@ class AgentLoopStreamAPIView(View):
                             # 检测工具调用开始（用于生成 step_start 事件）
                             elif isinstance(chunk, dict):
                                 for node_name, node_output in chunk.items():
-                                    if node_name == "agent" and isinstance(
+                                    if node_name in ("agent", "model") and isinstance(
                                         node_output, dict
                                     ):
                                         messages = node_output.get("messages", [])
@@ -1728,8 +1758,8 @@ class AgentLoopStreamAPIView(View):
                                     }
                                 )
                                 repair_input = {"messages": [HumanMessage(content=review_result.repair_prompt)]}
-                                async for repair_stream_mode, repair_chunk in agent.astream(
-                                    repair_input,
+                                async for repair_stream_mode, repair_chunk in stream_with_chinese_responses(
+                                    agent, repair_input,
                                     config=invoke_config,
                                     stream_mode=["messages"],
                                 ):
@@ -1907,15 +1937,8 @@ class AgentLoopStreamAPIView(View):
 
         # 兜底：如果前端没传 test_case_id，尝试从消息中解析
         if not test_case_id and user_message:
-            import re
-
-            # 匹配 "执行ID为 11 的测试用例" 或 "测试用例 ID：11" 等模式
-            match = re.search(
-                r"(?:执行\s*ID\s*为|测试用例\s*(?:ID|id)[：:]\s*|case[_-]?id[：:=]\s*)(\d+)",
-                user_message,
-            )
-            if match:
-                test_case_id = int(match.group(1))
+            test_case_id = extract_execution_case_id(user_message)
+            if test_case_id:
                 logger.info(
                     f"AgentLoopStreamAPI: Parsed test_case_id from message: {test_case_id}"
                 )
@@ -2465,7 +2488,7 @@ class AgentLoopResumeAPIView(View):
                     system_prompt=resume_system_prompt,
                     state_schema=ExecutionAgentState,
                     checkpointer=checkpointer,
-                    middleware=middleware,
+                    middleware=[ChineseResponseMiddleware(), *middleware],
                 )
 
                 thread_id = (
@@ -2609,7 +2632,7 @@ class AgentLoopResumeAPIView(View):
                             # 检测工具调用开始
                             elif isinstance(chunk, dict):
                                 for node_name, node_output in chunk.items():
-                                    if node_name == "agent" and isinstance(
+                                    if node_name in ("agent", "model") and isinstance(
                                         node_output, dict
                                     ):
                                         messages = node_output.get("messages", [])

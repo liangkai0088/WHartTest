@@ -270,11 +270,15 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 
 **执行参数说明：**
 - `--config_id` - 环境配置 ID（不传使用默认配置）
-- `--actuator_id` - 执行器 ID（不传自动选择可用执行器）
+- `--actuator_id` - 执行器 ID（不传优先选择启用的有界面浏览器执行器）
 - `--wait_result` - 是否等待执行结果（默认否，传此参数则等待）
 - `--exec_timeout` - 等待超时时间（秒，默认 120）
 
 **注意：** 执行前需确保有执行器在线（通过 `get_actuators` 查询）
+
+UI 用例必须优先在本机可见浏览器中执行。查询执行器后，选择 `is_open=true` 且 `headless=false` 的执行器，并把其 ID 显式传给 `execute_testcase --actuator_id <可见执行器ID>`；执行工具本身也会自动解析并锁定这个可见执行器。不能因为 API/WebSocket 或“执行器代理”提示失败就切换到无头执行器。仅在 `get_actuators` 明确没有在线可见执行器时回退到无头浏览器，并用中文说明实际执行方式。设置环境配置的 `headless=false` 不能代替启动本机有界面执行器。
+
+`execute_testcase` 使用 API/WebSocket 下发任务，实际操作由执行器启动浏览器完成。必须保留页面访问、输入、点击、等待和页面断言，禁止使用业务 API 请求代替 UI 用例的交互步骤。
 
 ---
 

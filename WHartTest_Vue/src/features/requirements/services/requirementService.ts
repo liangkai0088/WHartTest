@@ -161,12 +161,35 @@ export class RequirementDocumentService {
    * 下载文档原始文件
    */
   static async downloadFile(id: string): Promise<ArrayBuffer> {
-    const response = await httpService.request<ArrayBuffer>({
+    const raw = await httpService.request<ArrayBuffer>({
       url: `${BASE_URL}/documents/${id}/download-file/`,
       method: 'GET',
       responseType: 'arraybuffer'
     });
-    return response.data;
+    // request.ts 响应拦截器会把响应统一包装成 { success, data, message }
+    const result: any = raw?.data ?? raw;
+    if (result && typeof result === 'object' && 'data' in result && result.success) {
+      return result.data as ArrayBuffer;
+    }
+    return result as unknown as ArrayBuffer;
+  }
+
+  /**
+   * 导出评审报告 Word 文档
+   */
+  static async exportReviewReport(id: string, reportId?: string): Promise<ArrayBuffer> {
+    const raw = await httpService.request<ArrayBuffer>({
+      url: `${BASE_URL}/documents/${id}/export-report/`,
+      method: 'GET',
+      params: reportId ? { report_id: reportId } : undefined,
+      responseType: 'arraybuffer'
+    });
+    // request.ts 响应拦截器会把响应统一包装成 { success, data, message }
+    const result: any = raw?.data ?? raw;
+    if (result && typeof result === 'object' && 'data' in result && result.success) {
+      return result.data as ArrayBuffer;
+    }
+    return result as unknown as ArrayBuffer;
   }
 
   /**
